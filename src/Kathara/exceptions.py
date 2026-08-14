@@ -169,6 +169,12 @@ class DockerPluginError(Exception):
     pass
 
 
+# Podman Exceptions
+class PodmanImageNotFoundError(Exception):
+    def __init__(self, image_name: str) -> None:
+        super().__init__(f"Podman Image `{image_name}` is not available neither on a remote registry nor in local repository!")
+
+
 # Kubernetes Exceptions
 class KubernetesConfigMapError(Exception):
     pass
