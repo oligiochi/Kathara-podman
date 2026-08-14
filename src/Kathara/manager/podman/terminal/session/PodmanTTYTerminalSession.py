@@ -2,7 +2,7 @@ import os
 from typing import Any, Optional
 
 from .....foundation.manager.terminal.core.ITerminalSession import ITerminalSession
-from ...podman_exec import exec_resize
+from ...podman_exec import _exec_resize
 
 
 class PodmanTTYTerminalSession(ITerminalSession):
@@ -89,7 +89,7 @@ class PodmanTTYTerminalSession(ITerminalSession):
 
         # podman-py has no exec_resize equivalent: hit POST /exec/{id}/resize directly.
         # Note the axis order: the endpoint wants height/width, cols->w, rows->h.
-        exec_resize(self._client, self._exec_id, cols, rows)
+        _exec_resize(self._client, self._exec_id, cols, rows)
 
     def close(self) -> None:
         """Close the session and release resources.
