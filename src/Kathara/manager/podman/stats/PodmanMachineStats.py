@@ -1,6 +1,7 @@
 import json
 from typing import Dict, Any, Generator, Optional
 
+from Kathara.manager.podman.libpod_compat import LibpodCompat
 from podman.domain.containers import Container
 from podman.errors import NotFound
 
@@ -71,7 +72,7 @@ class PodmanMachineStats(IMachineStats):
             # Happens while deleting
             pass
 
-        self.status = self.machine_api_object.status
+        self.status = LibpodCompat.container_status(self.machine_api_object)
         self.pids = updated_stats['pids_stats']['current'] if 'current' in updated_stats.get('pids_stats', {}) else 0
 
         ifaces = json.loads(self.machine_api_object.labels.get(IFACES_LABEL) or "{}")

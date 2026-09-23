@@ -4,6 +4,7 @@ import logging
 import os
 from typing import Set, Dict, Generator, Tuple, List, Optional, Union
 
+from Kathara.manager.podman.libpod_compat import LibpodCompat
 import podman.domain.containers
 import podman.domain.networks
 from podman import PodmanClient
@@ -29,7 +30,6 @@ from ...model.Machine import Machine
 from ...setting.Setting import Setting
 from ...types import SharedCollisionDomainsOption
 from ...utils import pack_files_for_tar, check_required_single_not_none_var, check_single_not_none_var
-
 
 def default_podman_socket() -> str:
     """Return the default Podman service socket URL.
@@ -82,7 +82,6 @@ class PodmanManager(IManager):
                                                       max_pool_size=utils.get_pool_size())
         except PodmanError as e:
             raise ContainerEngineConnectionError(str(e))
-
         self.podman_image: PodmanImage = PodmanImage(self.client)
         self.podman_machine: PodmanMachine = PodmanMachine(self.client, self.podman_image)
         self.podman_link: PodmanLink = PodmanLink(self.client)
@@ -205,7 +204,7 @@ class PodmanManager(IManager):
             raise MachineNotRunningError(machine.name)
 
         machine.api_object.reload()
-        if machine.api_object.status != "running":
+        if LibpodCompat.container_status(machine.api_object) != "running":
             raise MachineNotRunningError(machine.name)
 
         if not link.lab:
@@ -255,7 +254,7 @@ class PodmanManager(IManager):
             raise MachineNotRunningError(machine.name)
 
         machine.api_object.reload()
-        if machine.api_object.status != "running":
+        if LibpodCompat.container_status(machine.api_object) != "running":
             raise MachineNotRunningError(machine.name)
 
         if not link.lab:
