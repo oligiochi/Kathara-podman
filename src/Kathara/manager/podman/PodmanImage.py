@@ -109,6 +109,7 @@ class PodmanImage(object):
         """
         try:
             # Tries to get the image from the local Podman storage.
+            image_name = self._normalize_image_name(image_name)
             image = self.get_local(image_name)
             self._check_image_architecture(image_name, image)
             self.check_for_updates(image_name)
@@ -163,3 +164,17 @@ class PodmanImage(object):
 
         if image_arch not in compatible_archs:
             raise InvalidImageArchitectureError(image_name, host_arch)
+        
+    @staticmethod
+    def _normalize_image_name(image_name: str) -> str:
+        """Qualify a short image name with Docker Hub, as Docker does implicitly.
+
+        Podman enforces short-name resolution and cannot prompt through the API, so an unqualified
+        name like `kathara/base` must be turned into `docker.io/kathara/base`.
+        """
+        first, sep, _ = image_name.partition("/")
+        if not sep:
+            return f"docker.io/library/{image_name}"
+        if "." in first or ":" in first or first == "localhost":
+            return image_name
+        return f"docker.io/{image_name}"
