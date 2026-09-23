@@ -19,7 +19,7 @@ from ...types import SharedCollisionDomainsOption
 # The default bridge network Podman creates for containers not attached to a user-defined network.
 # Used for Kathará's "bridged" device option, mirroring DockerLink.get_docker_bridge().
 DEFAULT_BRIDGE_NETWORK_NAME = "podman"
-
+NETWORK_PLUGIN_DRIVER = "katharanp"
 
 class PodmanLink(object):
     """The class responsible for deploying Kathara collision domains as Podman networks and interact with them."""
@@ -131,13 +131,14 @@ class PodmanLink(object):
             if Setting.get_instance().shared_cds == SharedCollisionDomainsOption.NOT_SHARED:
                 additional_labels["lab_hash"] = link.lab.hash
 
-            # Podman/netavark's default (host-local) IPAM is harmless but cosmetic for Kathará, which
-            # always assigns interface addresses itself (see SPIKE-REPORT.md S6): unlike Docker's compat
-            # API, libpod's native network create lets us opt out of it entirely with `ipam_driver=none`.
+            # The L2 topology is owned by the Kathará network plugin (a netavark plugin): it creates the bridge
+            # and the veths, and applies interface names, MAC addresses and per-interface sysctls.
+            # Podman only forwards the configuration, so IPAM and DNS are disabled: Kathará assigns
+            # addresses itself (see SPIKE-REPORT.md S6) and machines do not need aardvark-dns.
             link.api_object = self.client.networks.create(
                 name=link_name,
-                driver="bridge",
-                internal=True,
+                driver=NETWORK_PLUGIN_DRIVER,
+                dns_enabled=False,
                 ipam=IPAMConfig(driver="none"),
                 labels={
                     "name": link.name,
@@ -236,15 +237,16 @@ class PodmanLink(object):
         Returns:
             List[podman.domain.networks.Network]: A list of Podman networks.
         """
-        filters = {"label": ["app=kathara"]}
-        if user:
-            filters["label"].append(f"user={user}")
-        if lab_hash:
-            filters["label"].append(f"lab_hash={lab_hash}")
-        if link_name:
-            filters["label"].append(f"name={link_name}")
-
-        return self.client.networks.list(filters=filters)
+        # podman-py's prepare_filters() stringifies list values of a filters *dict*, and networks.list()
+        # adds its own keys to the dict, so the list-of-strings form cannot be used here either:
+        # filter server-side on the Kathará label only (a plain string value), and on the rest client-side.
+        # Revert to a single server-side filter once fixed upstream.
+        networks = self.client.networks.list(filters={"label": "app=kathara"})
+        wanted = {"user": user, "lab_hash": lab_hash, "name": link_name}
+        return [
+            network for network in networks
+            if all(network.attrs.get("labels", {}).get(key) == value for key, value in wanted.items() if value)
+        ]
 
     def get_links_stats(self, lab_hash: str = None, link_name: str = None, user: str = None) -> \
             Generator[Dict[str, PodmanLinkStats], None, None]:
