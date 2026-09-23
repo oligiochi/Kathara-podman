@@ -12,7 +12,7 @@ publicly (see containers/podman-py#648).
 """
 import json
 from typing import Any, Dict, List, Optional, Union
-
+import shlex
 from podman import api as podman_api
 from podman.api.output_utils import demux_output
 
@@ -26,8 +26,11 @@ def exec_create(api: Any, container_id: str, cmd: Union[str, List[str]], stdout:
         environment = [f"{k}={v}" for k, v in environment.items()]
 
     payload = {
-        "AttachStdin": stdin, "AttachStdout": stdout, "AttachStderr": stderr,
-        "Tty": tty, "Cmd": cmd if isinstance(cmd, list) else [cmd], "Privileged": privileged,
+        "AttachStdin": stdin, "AttachStdout": stdout, 
+        "AttachStderr": stderr,
+        "Tty": tty, 
+        "Cmd": cmd if isinstance(cmd, list) else shlex.split(cmd), 
+        "Privileged": privileged,
         "Env": environment, "WorkingDir": workdir,
     }
     if user:
