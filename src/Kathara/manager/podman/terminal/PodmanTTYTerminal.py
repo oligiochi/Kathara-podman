@@ -1,8 +1,8 @@
 from typing import Any
 
-from podman.api.client import APIClient
+from podman import PodmanClient
 
-from .session import PodmanTTYTerminalSession
+from .session.PodmanTTYTerminalSession import PodmanTTYTerminalSession
 from ....foundation.manager.terminal.console.UnixConsoleAdapter import UnixConsoleAdapter
 from ....foundation.manager.terminal.core.IConsoleAdapter import IConsoleAdapter
 from ....foundation.manager.terminal.core.ITerminalSession import ITerminalSession
@@ -14,13 +14,13 @@ class PodmanTTYTerminal(object):
 
     Args:
         handler (Any): The hijacked socket returned by `PodmanMachine.connect()`.
-        client (APIClient): The podman-py low-level API client (`PodmanClient.api`).
+        client (PodmanClient): The podman-py low-level API client (`PodmanClient.api`).
         exec_id (str): Podman exec ID identifying the running exec session.
     """
 
-    __slots__ = ["_session", "_runner"]
+    __slots__ = ["_session", "_runner", "libpodCompat"]
 
-    def __init__(self, handler: Any, client: APIClient, exec_id: str) -> None:
+    def __init__(self, handler: Any, client: PodmanClient, exec_id: str) -> None:
         console: IConsoleAdapter = UnixConsoleAdapter()
         session: ITerminalSession = PodmanTTYTerminalSession(handler=handler, client=client, exec_id=exec_id)
 

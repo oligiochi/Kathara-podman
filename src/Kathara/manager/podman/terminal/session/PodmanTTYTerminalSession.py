@@ -2,7 +2,7 @@ import os
 from typing import Any, Optional
 
 from .....foundation.manager.terminal.core.ITerminalSession import ITerminalSession
-from ...podman_exec import exec_resize
+from ...libpod_compat import LibpodCompat
 
 
 class PodmanTTYTerminalSession(ITerminalSession):
@@ -12,7 +12,7 @@ class PodmanTTYTerminalSession(ITerminalSession):
     by an exec hijack and exposes it through the engine-neutral ITerminalSession
     contract (fileno/read/write/resize/close), so TerminalRunner can drive it unchanged.
 
-    Temporary shim: the hijack and resize plumbing lives in podman_exec because the
+    Temporary shim: the hijack and resize plumbing lives in libpod_compat because the
     current podman-py release exposes no low-level exec_create / exec_start(socket=True)
     / exec_resize. Once those land upstream (see podman-py #648), the helpers can be
     swapped for the SDK and this class collapses onto the Docker one.
@@ -24,7 +24,7 @@ class PodmanTTYTerminalSession(ITerminalSession):
         exec_id (str): The exec instance id, required to address the resize endpoint.
     """
 
-    __slots__ = ['_exec_id', '_external_fd']
+    __slots__ = ['_exec_id', '_external_fd', 'libpodCompat']
 
     def __init__(self, handler: Any, client: Any, exec_id: str) -> None:
         super().__init__(handler, client)
@@ -32,6 +32,7 @@ class PodmanTTYTerminalSession(ITerminalSession):
         self._exec_id: str = exec_id
         # Cache the OS-level fd of the hijacked socket; read/write go through it directly.
         self._external_fd: int = handler.fileno()
+        self.libpodCompat: LibpodCompat = LibpodCompat(client)
 
     def fileno(self) -> Optional[int]:
         """Return an OS-level file descriptor for the session, if available.
@@ -89,7 +90,7 @@ class PodmanTTYTerminalSession(ITerminalSession):
 
         # podman-py has no exec_resize equivalent: hit POST /exec/{id}/resize directly.
         # Note the axis order: the endpoint wants height/width, cols->w, rows->h.
-        exec_resize(self._client, self._exec_id, cols, rows)
+        self.libpodCompat.exec_resize(self._exec_id, cols, rows)
 
     def close(self) -> None:
         """Close the session and release resources.

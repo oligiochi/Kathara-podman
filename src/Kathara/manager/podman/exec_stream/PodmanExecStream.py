@@ -1,9 +1,9 @@
 from collections.abc import Iterator
 from typing import Any, Generator
 
-from podman.api.client import APIClient
+from podman import PodmanClient
 
-from ..podman_exec import exec_inspect
+from ..libpod_compat import LibpodCompat
 from ....foundation.manager.exec_stream.IExecStream import IExecStream
 
 
@@ -13,14 +13,15 @@ class PodmanExecStream(IExecStream):
     Attributes:
         _stream (Generator): The generator yielding the output of the stream exec.
         _stream_api_object (str): The Podman exec id backing this stream.
-        _client (APIClient): The podman-py low-level API client to interact with the stream.
+        _client (PodmanClient): The podman-py low-level API client to interact with the stream.
     """
-    __slots__ = ['_client']
+    __slots__ = ['_client', 'libpodCompat']
 
-    def __init__(self, stream: Generator, stream_api_object: str, client: APIClient) -> None:
+    def __init__(self, stream: Generator, stream_api_object: str, client: PodmanClient) -> None:
         super().__init__(stream, stream_api_object)
 
-        self._client: APIClient = client
+        self._client: PodmanClient = client
+        self.libpodCompat: LibpodCompat = LibpodCompat(client)
 
     def stream_next(self) -> Iterator:
         """Return the next element from the stream.
@@ -36,4 +37,4 @@ class PodmanExecStream(IExecStream):
         Returns:
             int: The exit code of the execution.
         """
-        return int(exec_inspect(self._client, self._stream_api_object)['ExitCode'])
+        return int(self.libpodCompat.exec_inspect(self._stream_api_object)['ExitCode'])
