@@ -15,7 +15,7 @@ import podman.domain.containers
 from podman import PodmanClient
 from podman.errors import APIError
 
-from . import podman_exec
+from .libpod_compat import LibpodCompat
 from .PodmanImage import PodmanImage
 from .exec_stream.PodmanExecStream import PodmanExecStream
 from .stats.PodmanMachineStats import PodmanMachineStats
@@ -37,7 +37,9 @@ OCI_RUNTIME_RE = re.compile(
 
 # libpod reports a generic "oci" runtime name per-container, never "crun": the error message
 # itself is what tells us it's a missing-binary failure, not the runtime field.
-IFACE_SYSCTL_RE = re.compile(r"net\.ipv[4,6]\.(conf|neigh)\.eth\d+")
+
+# Per-interface sysctls (`net.ipv{4,6}.{conf,neigh}.ethN.*`): group 2 is the interface name.
+IFACE_SYSCTL_RE = re.compile(r"net\.ipv[46]\.(conf|neigh)\.(eth\d+)\.")
 
 # Container label used to persist per-interface metadata (link name, interface number, MAC).
 # Native libpod network-attachment data has no equivalent of Docker's endpoint `DriverOpts`, so
@@ -128,11 +130,12 @@ CPU_PERIOD = 100000
 
 class PodmanMachine(object):
     """The class responsible for deploying Kathara devices as Podman containers and interact with them."""
-    __slots__ = ['client', 'podman_image']
+    __slots__ = ['client', 'podman_image', 'libpodCompat']
 
     def __init__(self, client: PodmanClient, podman_image: PodmanImage) -> None:
         self.client: PodmanClient = client
         self.podman_image: PodmanImage = podman_image
+        self.libpodCompat: LibpodCompat = LibpodCompat(self.client)
 
     def deploy_machines(self, lab: Lab, selected_machines: Set[str] = None, excluded_machines: Set[str] = None) -> None:
         """Deploy all the network scenario devices as Podman containers.
@@ -284,10 +287,9 @@ class PodmanMachine(object):
             machine.add_meta("_bridge_connected", True)
 
         # Sysctl params to pass to the container creation.
-        # NOTE: unlike newer Docker Engine versions, netavark has no per-endpoint driver_opt to carry
-        # interface sysctls, so they must all be passed in the container-level `sysctl` dict. This only
-        # reliably works for the FIRST interface, which exists already at create time: sysctls targeting
-        # interfaces attached later via `connect_interface()` cannot be guaranteed to apply.
+        # Only device-wide sysctls go here: per-interface sysctls (`net.ipv{4,6}.{conf,neigh}.ethN.*`) are applied
+        # by the Kathará network plugin when each interface is attached, both at create time and at runtime
+        # (see `_get_iface_sysctls`), like Docker Engine >= 27 does with `com.docker.network.endpoint.sysctls`.
         sysctl_parameters = {RP_FILTER_NAMESPACE % x: 0 for x in ["all", "default", "lo"]}
         sysctl_parameters["net.ipv4.ip_forward"] = 1
         sysctl_parameters["net.ipv4.icmp_ratelimit"] = 0
@@ -304,26 +306,10 @@ class PodmanMachine(object):
             sysctl_parameters["net.ipv6.conf.default.forwarding"] = 0
             sysctl_parameters["net.ipv6.conf.all.forwarding"] = 0
 
-        if first_machine_iface:
-            sysctl_parameters[RP_FILTER_NAMESPACE % f"eth{first_machine_iface.num}"] = 0
-
-        # Merge machine sysctls (user-provided values take precedence).
-        sysctl_parameters = {**sysctl_parameters, **machine.meta['sysctls']}
-
-        first_iface_token = f"eth{first_machine_iface.num}" if first_machine_iface else None
-        non_first_iface_sysctls = [
-            k for k in sysctl_parameters
-            if IFACE_SYSCTL_RE.match(k) and (first_iface_token is None or not k.endswith(first_iface_token))
-        ]
-        if non_first_iface_sysctls:
-            logging.warning(
-                f"Device `{machine.name}`: sysctls for interfaces other than the first one "
-                f"({', '.join(non_first_iface_sysctls)}) are not supported on Podman "
-                "and will not be applied."
-            )
-
+        # Merge machine sysctls (user-provided values take precedence), then keep only the device-wide ones.
         # Podman wants string values.
-        sysctl_parameters = {k: str(v) for k, v in sysctl_parameters.items()}
+        sysctl_parameters = {**sysctl_parameters, **machine.get_sysctls()}
+        sysctl_parameters = {k: str(v) for k, v in sysctl_parameters.items() if not IFACE_SYSCTL_RE.match(k)}
 
         volumes = {}
         mounts = []
@@ -366,8 +352,12 @@ class PodmanMachine(object):
             raise PrivilegeError(f"You must be root in order to start device `{machine.name}` in privileged mode.")
 
         networks = None
-        if first_network:
-            networks = {first_network.name: {}}
+        if first_machine_iface:
+            networks = {first_network.name: self._get_network_options(machine, first_machine_iface)}
+        elif first_network:
+            # Bridged-only device: the bridge is a plain Podman network, not a Kathará plugin network,
+            # so it only gets the interface name Kathará expects (no MAC, no plugin sysctls).
+            networks = {first_network.name: {"interface_name": f"eth{machine.meta['bridged_iface']}"}}
 
         container_name = self.get_container_name(machine.name, machine.lab.hash)
 
@@ -396,7 +386,6 @@ class PodmanMachine(object):
                 hostname=machine.name,
                 cap_add=MACHINE_CAPABILITIES if not privileged_flag else None,
                 privileged=privileged_flag,
-                mac_address=first_machine_iface.mac_address if first_machine_iface else None,
                 environment=machine.meta['envs'],
                 sysctls=sysctl_parameters,
                 mem_limit=memory,
@@ -413,11 +402,12 @@ class PodmanMachine(object):
                 entrypoint=entrypoint,
                 command=args
             )
-            # `network_mode` and `networks` are mutually exclusive for podman-py's `_render_payload`
-            # (passing the key at all, even as None, is enough to trigger its handling), so only one
-            # of the two is ever added to the call.
+            # libpod requires an explicit `bridge` netns mode when `networks` carry per-network options
+            # such as a static MAC address: otherwise it rejects the spec ("networks and static ip/mac address
+            # can only be used with Bridge mode networking").
             if networks:
                 create_kwargs["networks"] = networks
+                create_kwargs["network_mode"] = "bridge"
             else:
                 create_kwargs["network_mode"] = "none"
 
@@ -443,29 +433,67 @@ class PodmanMachine(object):
             None
 
         Raises:
-            APIError: If the Podman APIs return an error.
+            APIError: If the Podman APIs return an error, including when the network plugin fails
+                to apply an interface sysctl.
         """
         machine.api_object.reload()
         attached_networks = machine.api_object.attrs.get("NetworkSettings", {}).get("Networks", {})
 
         if interface.link.api_object.name not in attached_networks:
-            connect_kwargs = {}
-            if interface.mac_address:
-                # podman-py's Network.connect() has no `mac_address` kwarg: libpod's per-network
-                # PerNetworkOptions accepts a `static_mac` field, but only through the container-level
-                # `networks` map at create time (see `create()`). Attaching a MAC-pinned interface at
-                # runtime is not currently wired up; needs validation against a live libpod service.
-                logging.warning(
-                    f"Device `{machine.name}`: cannot set a static MAC address on interface "
-                    f"`{interface.num}` connected at runtime on Podman."
-                )
-
-            try:
-                interface.link.api_object.connect(machine.api_object, **connect_kwargs)
-            except APIError as e:
-                raise e
+            self.libpodCompat.network_connect(
+                interface.link.api_object, machine.api_object, f"eth{interface.num}",
+                mac_address=interface.mac_address,
+                sysctls=self._get_iface_sysctls(machine, interface.num),
+            )
 
             self._update_ifaces_label(machine.api_object, interface)
+
+    @staticmethod
+    def _get_iface_sysctls(machine: Machine, interface_num: int) -> Dict[str, Any]:
+        """Return the sysctls of a single interface of the device.
+
+        Mirrors the per-endpoint sysctls of the Docker backend (Docker Engine >= 27): Kathará defaults for every
+        interface, overridden by the user sysctls that target this interface.
+
+        Args:
+            machine (Kathara.model.Machine.Machine): A Kathara device.
+            interface_num (int): The number of the interface.
+
+        Returns:
+            Dict[str, Any]: The sysctls to apply to the interface, with the explicit interface name (e.g. `eth1`).
+        """
+        iface = f"eth{interface_num}"
+        sysctls = {RP_FILTER_NAMESPACE % iface: 0}
+        if machine.is_ipv6_enabled():
+            sysctls[f"net.ipv6.conf.{iface}.disable_ipv6"] = 0
+            sysctls[f"net.ipv6.conf.{iface}.forwarding"] = 1
+        else:
+            sysctls[f"net.ipv6.conf.{iface}.disable_ipv6"] = 1
+
+        for key, value in machine.get_sysctls().items():
+            match = IFACE_SYSCTL_RE.match(key)
+            if match and match.group(2) == iface:
+                sysctls[key] = value
+
+        return sysctls
+
+    def _get_network_options(self, machine: Machine, interface: Interface) -> Dict[str, Any]:
+        """Return the per-network options used to attach an interface at container creation.
+
+        Args:
+            machine (Kathara.model.Machine.Machine): A Kathara device.
+            interface (Kathara.model.Interface.Interface): The interface attached at creation.
+
+        Returns:
+            Dict[str, Any]: The libpod per-network options (interface name, static MAC, plugin options).
+        """
+        options = {"interface_name": f"eth{interface.num}"}
+        if interface.mac_address:
+            options["static_mac"] = interface.mac_address
+        plugin_options = LibpodCompat.sysctl_options(self._get_iface_sysctls(machine, interface.num))
+        if plugin_options:
+            options["options"] = plugin_options
+        return options
 
     @staticmethod
     def _encode_ifaces_label(ifaces: Dict[str, Interface]) -> str:
@@ -548,7 +576,8 @@ class PodmanMachine(object):
         # Bridged connection required but not added in `deploy` method.
         if "_bridge_connected" not in machine.meta and machine.is_bridged():
             bridge_link = machine.lab.get_or_new_link(BRIDGE_LINK_NAME).api_object
-            bridge_link.connect(machine.api_object)
+            # Plain Podman network: only the interface name, which Kathará stores in the `bridged_iface` label.
+            self.libpodCompat.network_connect(bridge_link, machine.api_object, f"eth{machine.meta['bridged_iface']}")
 
         # Append executed machine startup commands inside the /var/log/startup.log file
         if machine.meta['exec_commands']:
@@ -740,14 +769,14 @@ class PodmanMachine(object):
 
                 sys.stdout.flush()
 
-        exec_id = podman_exec.exec_create(self.client.api, container.id, shell, stdout=True, stderr=True,
-                                          stdin=True, tty=True, privileged=False)
-        hijacked_socket = podman_exec.exec_start_hijack(self.client.api, exec_id, tty=True)
+        exec_id = self.libpodCompat.exec_create(container.id, shell, stdout=True, stderr=True,
+                                                stdin=True, tty=True, privileged=False)
+        hijacked_socket = self.libpodCompat.exec_start_hijack(exec_id, tty=True)
 
         def tty_connect():
             from .terminal.PodmanTTYTerminal import PodmanTTYTerminal
             try:
-                PodmanTTYTerminal(hijacked_socket, self.client.api, exec_id).start()
+                PodmanTTYTerminal(hijacked_socket, self.client, exec_id).start()
             except Exception:
                 hijacked_socket.close()
                 raise
@@ -825,7 +854,7 @@ class PodmanMachine(object):
                                      )
 
         if stream:
-            return PodmanExecStream(exec_result['output'], exec_result['Id'], self.client.api)
+            return PodmanExecStream(exec_result['output'], exec_result['Id'], self.client)
 
         return exec_result['output'][0], exec_result['output'][1], exec_result['exit_code']
 
@@ -866,14 +895,14 @@ class PodmanMachine(object):
             APIError: If the server returns an error.
             MachineBinaryError: If the binary of the command is not found.
         """
-        exec_id = podman_exec.exec_create(
-            self.client.api, container.id, cmd, stdout=stdout, stderr=stderr, stdin=stdin, tty=tty,
+        exec_id = self.libpodCompat.exec_create(
+            container.id, cmd, stdout=stdout, stderr=stderr, stdin=stdin, tty=tty,
             privileged=privileged, user=user, environment=environment, workdir=workdir,
         )
 
         try:
-            exec_output = podman_exec.exec_start(self.client.api, exec_id, tty=tty, detach=detach,
-                                                 stream=stream, demux=demux)
+            exec_output = self.libpodCompat.exec_start(exec_id, tty=tty, detach=detach,
+                                                       stream=stream, demux=demux)
         except APIError as e:
             matches = OCI_RUNTIME_RE.search(e.explanation or str(e))
             if matches:
@@ -881,7 +910,7 @@ class PodmanMachine(object):
 
             raise e
 
-        exit_code = podman_exec.exec_inspect(self.client.api, exec_id).get('ExitCode')
+        exit_code = self.libpodCompat.exec_inspect(exec_id).get('ExitCode')
         if not stream and (exit_code is not None and exit_code != 0):
             (stdout_out, _) = exec_output if demux else (exec_output, None)
             exec_stdout = ""
@@ -1013,13 +1042,16 @@ class PodmanMachine(object):
         Returns:
             List[podman.domain.containers.Container]: A list of Podman containers objects.
         """
-        filters = {"label": ["app=kathara"]}
+        # podman-py's prepare_filters() stringifies list values of a filters *dict*
+        # ({"label": ["a=b", "c=d"]} becomes {"label": ["['a=b', 'c=d']"]}): the list-of-strings form
+        # ("key=value") is serialized correctly, so it is used instead. Revert once fixed upstream.
+        filters = ["label=app=kathara"]
         if user:
-            filters["label"].append(f"user={user}")
+            filters.append(f"label=user={user}")
         if lab_hash:
-            filters["label"].append(f"lab_hash={lab_hash}")
+            filters.append(f"label=lab_hash={lab_hash}")
         if machine_name:
-            filters["label"].append(f"name={machine_name}")
+            filters.append(f"label=name={machine_name}")
 
         return self.client.containers.list(all=True, filters=filters, ignore_removed=True)
 
@@ -1104,7 +1136,7 @@ class PodmanMachine(object):
 
         logging.debug(f"Executing shutdown commands on `{container.labels['name']}`: {shutdown_commands_string}")
         # Execute the shutdown commands inside the container (only if it's running)
-        if container.status == "running":
+        if LibpodCompat.container_status(container) == "running":
             try:
                 self._exec_run(container,
                                cmd=[container.labels['shell'], '-c', shutdown_commands_string],
