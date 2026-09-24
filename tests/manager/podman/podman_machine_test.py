@@ -6,11 +6,11 @@ import pytest
 
 sys.path.insert(0, './')
 
-from src.Kathara.manager.podman.PodmanMachine import PodmanMachine, IFACES_LABEL, CPU_PERIOD
+from src.Kathara.manager.podman.PodmanMachine import PodmanMachine, IFACES_LABEL, CPU_PERIOD, IFACE_SYSCTL_RE
 from src.Kathara.model.Lab import Lab
 from src.Kathara.model.Link import Link
 from src.Kathara.model.Machine import Machine
-from src.Kathara.exceptions import PrivilegeError
+from src.Kathara.exceptions import NotSupportedError
 from src.Kathara.types import SharedCollisionDomainsOption
 
 
@@ -83,7 +83,9 @@ def test_create_no_interfaces(mock_get_current_user_name, mock_setting_get_insta
     assert kwargs['privileged'] is False
     assert kwargs['network_mode'] == 'none'
     assert 'networks' not in kwargs
-    assert kwargs['mac_address'] is None
+    # No container-level MAC address kwarg: MACs are set per-interface (see `_get_network_options` /
+    # `connect_interface`), not through podman-py's `containers.create(mac_address=...)`.
+    assert 'mac_address' not in kwargs
     assert kwargs['mem_limit'] == '64m'
     # cpus=2 -> cpu_quota = 2 * CPU_PERIOD, and cpu_period must be set alongside it
     assert kwargs['cpu_quota'] == 2 * CPU_PERIOD
@@ -121,11 +123,27 @@ def test_create_with_first_interface(mock_get_current_user_name, mock_setting_ge
     podman_machine.create(default_device)
 
     _, kwargs = podman_machine.client.containers.create.call_args
-    # `networks=` and `network_mode=` are mutually exclusive for podman-py: only one may be passed.
-    assert 'network_mode' not in kwargs
-    assert kwargs['networks'] == {'podman_link_a': {}}
-    assert kwargs['mac_address'] == "00:00:00:00:00:01"
-    assert kwargs['sysctls']['net.ipv4.conf.eth0.rp_filter'] == '0'
+    # libpod requires an explicit `bridge` netns mode when `networks` carry per-network options
+    # such as a static MAC address (`networks=` and `network_mode="none"` are mutually exclusive).
+    assert kwargs['network_mode'] == 'bridge'
+    # The interface name, static MAC and per-interface sysctls (prefixed for the Kathará network
+    # plugin) travel as per-network options, not as container-level kwargs.
+    assert kwargs['networks'] == {
+        'podman_link_a': {
+            'interface_name': 'eth0',
+            'static_mac': '00:00:00:00:00:01',
+            'options': {
+                'sysctl.net.ipv4.conf.eth0.rp_filter': '0',
+                'sysctl.net.ipv6.conf.eth0.disable_ipv6': '1',
+            }
+        }
+    }
+    assert 'mac_address' not in kwargs
+    # `sysctls=` only carries device-wide sysctls: per-interface ones are filtered out (they went
+    # into the network options above instead).
+    assert kwargs['sysctls']['net.ipv4.conf.all.rp_filter'] == '0'
+    assert kwargs['sysctls']['net.ipv4.ip_forward'] == '1'
+    assert all(not IFACE_SYSCTL_RE.match(k) for k in kwargs['sysctls'])
     # Sysctl values must all be strings for the Podman API.
     assert all(isinstance(v, str) for v in kwargs['sysctls'].values())
 
@@ -135,41 +153,125 @@ def test_create_with_first_interface(mock_get_current_user_name, mock_setting_ge
 
 
 @mock.patch("src.Kathara.manager.podman.PodmanMachine.PodmanMachine.get_machines_api_objects_by_filters")
+@mock.patch("src.Kathara.manager.podman.PodmanMachine.PodmanMachine.copy_files")
 @mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
 @mock.patch("src.Kathara.utils.get_current_user_name")
-@mock.patch("src.Kathara.utils.is_admin")
-def test_create_privileged_requires_admin(mock_is_admin, mock_get_current_user_name, mock_setting_get_instance,
-                                          mock_get_machines_api_objects_by_filters, podman_machine, default_device):
+def test_create_first_interface_custom_sysctl_in_network_options_not_in_sysctls(
+        mock_get_current_user_name, mock_setting_get_instance, mock_copy_files,
+        mock_get_machines_api_objects_by_filters, podman_machine, default_device, default_link):
     mock_get_machines_api_objects_by_filters.return_value = []
     mock_get_current_user_name.return_value = "test-user"
     mock_setting_get_instance.return_value = _setting_mock()
-    mock_is_admin.return_value = False
+
+    # A user override for eth0's rp_filter (per-interface) and a device-wide sysctl.
+    default_device.add_meta("sysctl", "net.ipv4.conf.eth0.rp_filter=1")
+    default_device.add_meta("sysctl", "net.ipv4.tcp_syncookies=1")
+    default_device.add_interface(default_link, number=0)
+
+    podman_machine.create(default_device)
+
+    _, kwargs = podman_machine.client.containers.create.call_args
+    # The per-interface override lands in eth0's network options, with the user value...
+    assert kwargs['networks']['podman_link_a']['options']['sysctl.net.ipv4.conf.eth0.rp_filter'] == '1'
+    # ...and never in the device-wide sysctls, which still carry the unrelated device-wide sysctl.
+    assert 'net.ipv4.conf.eth0.rp_filter' not in kwargs['sysctls']
+    assert kwargs['sysctls']['net.ipv4.tcp_syncookies'] == '1'
+    assert all(not IFACE_SYSCTL_RE.match(k) for k in kwargs['sysctls'])
+
+
+#
+# TEST: SELinux mount labeling
+#
+@mock.patch("src.Kathara.manager.podman.PodmanMachine.PodmanMachine.get_machines_api_objects_by_filters")
+@mock.patch("src.Kathara.manager.podman.PodmanMachine.PodmanMachine.copy_files")
+@mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
+@mock.patch("src.Kathara.utils.get_current_user_name")
+def test_create_shared_mount_only_keeps_selinux_confinement(
+        mock_get_current_user_name, mock_setting_get_instance, mock_copy_files,
+        mock_get_machines_api_objects_by_filters, podman_machine, default_device):
+    mock_get_machines_api_objects_by_filters.return_value = []
+    mock_get_current_user_name.return_value = "test-user"
+    mock_setting_get_instance.return_value = _setting_mock(shared_mount=True)
+    default_device.lab.shared_path = "/tmp/shared"
+
+    podman_machine.create(default_device)
+
+    _, kwargs = podman_machine.client.containers.create.call_args
+    assert kwargs['volumes']["/tmp/shared"] == {'bind': '/shared', 'mode': 'rw', 'extended_mode': ['z']}
+    assert 'security_opt' not in kwargs
+
+
+@mock.patch("src.Kathara.manager.podman.PodmanMachine.PodmanMachine.get_machines_api_objects_by_filters")
+@mock.patch("src.Kathara.manager.podman.PodmanMachine.PodmanMachine.copy_files")
+@mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
+@mock.patch("src.Kathara.utils.get_current_user_name")
+@mock.patch("src.Kathara.utils.get_current_user_home")
+def test_create_hosthome_mount_disables_selinux_label(
+        mock_get_current_user_home, mock_get_current_user_name, mock_setting_get_instance, mock_copy_files,
+        mock_get_machines_api_objects_by_filters, podman_machine, default_device):
+    mock_get_machines_api_objects_by_filters.return_value = []
+    mock_get_current_user_name.return_value = "test-user"
+    mock_get_current_user_home.return_value = "/home/test-user"
+    mock_setting_get_instance.return_value = _setting_mock(hosthome_mount=True)
+
+    podman_machine.create(default_device)
+
+    _, kwargs = podman_machine.client.containers.create.call_args
+    assert kwargs['volumes']["/home/test-user"] == {'bind': '/hosthome', 'mode': 'rw'}
+    assert kwargs['security_opt'] == ["disable"]
+
+
+@mock.patch("src.Kathara.manager.podman.PodmanMachine.PodmanMachine.get_machines_api_objects_by_filters")
+@mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
+@mock.patch("src.Kathara.utils.get_current_user_name")
+def test_create_privileged_not_supported(mock_get_current_user_name, mock_setting_get_instance,
+                                         mock_get_machines_api_objects_by_filters, podman_machine, default_device):
+    mock_get_machines_api_objects_by_filters.return_value = []
+    mock_get_current_user_name.return_value = "test-user"
+    mock_setting_get_instance.return_value = _setting_mock()
 
     default_device.add_meta("privileged", True)
 
-    with pytest.raises(PrivilegeError):
+    with pytest.raises(NotSupportedError, match="Privileged devices"):
         podman_machine.create(default_device)
+
+    assert not podman_machine.client.containers.create.called
 
 
 #
 # TEST: connect_interface / disconnect_from_link
 #
-def test_connect_interface(podman_machine, default_device, default_link):
+@mock.patch("src.Kathara.manager.podman.libpod_compat.LibpodCompat.network_connect")
+@mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
+def test_connect_interface(mock_setting_get_instance, mock_network_connect, podman_machine, default_device,
+                           default_link):
+    mock_setting_get_instance.return_value = _setting_mock()
     default_device.api_object.attrs = {"NetworkSettings": {"Networks": {}}}
     interface = default_device.add_interface(default_link, number=0)
 
     podman_machine.connect_interface(default_device, interface)
 
-    default_link.api_object.connect.assert_called_once_with(default_device.api_object)
+    # Hot-connect goes through the libpod compat layer (podman-py's native `Network.connect()` cannot
+    # set interface name, static MAC or per-interface sysctls), applying the same per-interface
+    # sysctls computed for a first-interface connection at create time.
+    mock_network_connect.assert_called_once_with(
+        default_link.api_object, default_device.api_object, "eth0",
+        mac_address=interface.mac_address,
+        sysctls={
+            "net.ipv4.conf.eth0.rp_filter": 0,
+            "net.ipv6.conf.eth0.disable_ipv6": 1,
+        }
+    )
 
 
-def test_connect_interface_already_attached(podman_machine, default_device, default_link):
+@mock.patch("src.Kathara.manager.podman.libpod_compat.LibpodCompat.network_connect")
+def test_connect_interface_already_attached(mock_network_connect, podman_machine, default_device, default_link):
     default_device.api_object.attrs = {"NetworkSettings": {"Networks": {"podman_link_a": {}}}}
     interface = default_device.add_interface(default_link, number=0)
 
     podman_machine.connect_interface(default_device, interface)
 
-    assert not default_link.api_object.connect.called
+    assert not mock_network_connect.called
 
 
 def test_disconnect_from_link(default_device, default_link):
@@ -178,6 +280,16 @@ def test_disconnect_from_link(default_device, default_link):
     PodmanMachine.disconnect_from_link(default_device, default_link)
 
     default_link.api_object.disconnect.assert_called_once_with(default_device.api_object)
+
+
+#
+# TEST: get_machines_stats
+#
+def test_get_machines_stats_all_users_not_supported(podman_machine):
+    machines_stats = podman_machine.get_machines_stats()
+
+    with pytest.raises(NotSupportedError, match="Statistics of all users"):
+        next(machines_stats)
 
 
 #
