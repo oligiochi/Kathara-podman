@@ -6,7 +6,7 @@ import pytest
 
 sys.path.insert(0, './')
 
-from src.Kathara.manager.podman.PodmanLink import PodmanLink
+from src.Kathara.manager.podman.PodmanLink import PodmanLink, NETWORK_PLUGIN_DRIVER
 from src.Kathara.model.ExternalLink import ExternalLink
 from src.Kathara.model.Lab import Lab
 from src.Kathara.exceptions import NotSupportedError
@@ -47,8 +47,13 @@ def test_create_new_network(mock_get_current_user_name, mock_setting_get_instanc
     podman_link.create(link)
 
     _, kwargs = podman_link.client.networks.create.call_args
-    assert kwargs['driver'] == 'bridge'
-    assert kwargs['internal'] is True
+    # The L2 topology (bridge, veths, interface names, MACs, per-interface sysctls) is owned by the
+    # Kathará netavark plugin, not by Podman itself.
+    assert kwargs['driver'] == NETWORK_PLUGIN_DRIVER
+    # Podman only forwards the configuration: IPAM and DNS are disabled since Kathará assigns
+    # addresses itself and machines do not need aardvark-dns.
+    assert kwargs['dns_enabled'] is False
+    assert 'internal' not in kwargs
     assert kwargs['labels']['name'] == 'A'
     assert kwargs['labels']['app'] == 'kathara'
     assert kwargs['labels']['user'] == 'test-user'
