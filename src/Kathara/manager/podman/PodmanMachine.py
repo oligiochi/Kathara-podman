@@ -18,12 +18,13 @@ from podman.errors import APIError
 from .libpod_compat import LibpodCompat
 from .PodmanImage import PodmanImage
 from .exec_stream.PodmanExecStream import PodmanExecStream
+from .rootless import not_supported_in_rootless
 from .stats.PodmanMachineStats import PodmanMachineStats
 from ... import utils
 from ...decorators import privileged
 from ...event.EventDispatcher import EventDispatcher
 from ...exceptions import MachineAlreadyExistsError, MachineBinaryError, MachineNotRunningError, \
-    PrivilegeError, InvocationError, MountDeniedError
+    InvocationError, MountDeniedError
 from ...model.Interface import Interface
 from ...model.Lab import Lab
 from ...model.Link import Link, BRIDGE_LINK_NAME
@@ -149,7 +150,7 @@ class PodmanMachine(object):
             None
 
         Raises:
-            PrivilegeError: If the privileged mode is active and the user does not have root privileges.
+            NotSupportedError: If the privileged mode is active on any of the devices to deploy.
             InvocationError: If both `selected_machines` and `excluded_machines` are specified.
         """
         if selected_machines and excluded_machines:
@@ -230,6 +231,7 @@ class PodmanMachine(object):
 
         Raises:
             MachineAlreadyExistsError: If a device with the name specified already exists.
+            NotSupportedError: If the device requires privileged mode.
             APIError: If the Podman APIs return an error.
         """
         logging.debug("Creating device `%s`..." % machine.name)
@@ -348,8 +350,8 @@ class PodmanMachine(object):
                 mounts.append({"type": "tmpfs", "source": "tmpfs", "target": guest_path})
 
         privileged_flag = machine.is_privileged()
-        if privileged_flag and not utils.is_admin():
-            raise PrivilegeError(f"You must be root in order to start device `{machine.name}` in privileged mode.")
+        if privileged_flag:
+            not_supported_in_rootless("Privileged devices")
 
         networks = None
         if first_machine_iface:
@@ -1070,10 +1072,10 @@ class PodmanMachine(object):
             PodmanMachineStats as values.
 
         Raises:
-            PrivilegeError: If user param is None and the user does not have root privileges.
+            NotSupportedError: If user is None.
         """
-        if user is None and not utils.is_admin():
-            raise PrivilegeError("You must be root to get devices statistics of all users.")
+        if user is None:
+            not_supported_in_rootless("Statistics of all users")
 
         machines_stats = {}
 

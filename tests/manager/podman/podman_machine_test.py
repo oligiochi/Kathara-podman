@@ -10,7 +10,7 @@ from src.Kathara.manager.podman.PodmanMachine import PodmanMachine, IFACES_LABEL
 from src.Kathara.model.Lab import Lab
 from src.Kathara.model.Link import Link
 from src.Kathara.model.Machine import Machine
-from src.Kathara.exceptions import PrivilegeError
+from src.Kathara.exceptions import NotSupportedError
 from src.Kathara.types import SharedCollisionDomainsOption
 
 
@@ -137,18 +137,18 @@ def test_create_with_first_interface(mock_get_current_user_name, mock_setting_ge
 @mock.patch("src.Kathara.manager.podman.PodmanMachine.PodmanMachine.get_machines_api_objects_by_filters")
 @mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
 @mock.patch("src.Kathara.utils.get_current_user_name")
-@mock.patch("src.Kathara.utils.is_admin")
-def test_create_privileged_requires_admin(mock_is_admin, mock_get_current_user_name, mock_setting_get_instance,
-                                          mock_get_machines_api_objects_by_filters, podman_machine, default_device):
+def test_create_privileged_not_supported(mock_get_current_user_name, mock_setting_get_instance,
+                                         mock_get_machines_api_objects_by_filters, podman_machine, default_device):
     mock_get_machines_api_objects_by_filters.return_value = []
     mock_get_current_user_name.return_value = "test-user"
     mock_setting_get_instance.return_value = _setting_mock()
-    mock_is_admin.return_value = False
 
     default_device.add_meta("privileged", True)
 
-    with pytest.raises(PrivilegeError):
+    with pytest.raises(NotSupportedError, match="Privileged devices"):
         podman_machine.create(default_device)
+
+    assert not podman_machine.client.containers.create.called
 
 
 #
@@ -178,6 +178,16 @@ def test_disconnect_from_link(default_device, default_link):
     PodmanMachine.disconnect_from_link(default_device, default_link)
 
     default_link.api_object.disconnect.assert_called_once_with(default_device.api_object)
+
+
+#
+# TEST: get_machines_stats
+#
+def test_get_machines_stats_all_users_not_supported(podman_machine):
+    machines_stats = podman_machine.get_machines_stats()
+
+    with pytest.raises(NotSupportedError, match="Statistics of all users"):
+        next(machines_stats)
 
 
 #
