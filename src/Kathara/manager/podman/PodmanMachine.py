@@ -338,6 +338,7 @@ class PodmanMachine(object):
 
                 if not missing_permissions:
                     volumes[host_path] = {'bind': volume['guest_path'], 'mode': volume['mode']}
+                    disable_selinux_label = True
                 else:
                     raise PermissionError(
                         f"To mount volume `{host_path}` in `{volume['guest_path']}` "
