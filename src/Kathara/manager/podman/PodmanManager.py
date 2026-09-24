@@ -4,6 +4,7 @@ import logging
 import os
 from typing import Set, Dict, Generator, Tuple, List, Optional, Union
 
+from Kathara.manager.podman.PodmanPlugin import PodmanPlugin
 from Kathara.manager.podman.libpod_compat import LibpodCompat
 import podman.domain.containers
 import podman.domain.networks
@@ -86,6 +87,7 @@ class PodmanManager(IManager):
         self.podman_image: PodmanImage = PodmanImage(self.client)
         self.podman_machine: PodmanMachine = PodmanMachine(self.client, self.podman_image)
         self.podman_link: PodmanLink = PodmanLink(self.client)
+        PodmanPlugin().check_and_download_plugin()
 
     @privileged
     def deploy_machine(self, machine: Machine) -> None:
