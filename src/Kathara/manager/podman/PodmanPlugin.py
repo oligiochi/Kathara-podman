@@ -26,17 +26,21 @@ class PodmanPlugin(object):
         self.install_dir: str = os.path.join(data_home, "kathara", "katharanp")
         
     def check_and_download_plugin(self) -> None:
-        """Check the presence of the Kathara Network Plugin and download it or upgrade it, if needed.
+        """Check the Kathara network plugin and install or update it, if needed.
 
         Returns:
             None
 
         Raises:
-            PodmanPluginError: If the Kathara Network Plugin is not found on remote Podman connection.
-            PodmanPluginError: If the Kathara Network Plugin is not enabled on remote Podman connection.
+            PodmanPluginError: If Podman is reached through a remote connection, or if the plugin
+                cannot be installed or the Podman service cannot be restarted.
         """
-        if Setting.get_instance().remote_url is not None:
-            raise PodmanPluginError("The Kathara network plugin cannot be installed on a remote Podman connection.")
+        socket_url = Setting.get_instance().api_socket_url
+        if socket_url and not socket_url.startswith("unix://"):
+            raise PodmanPluginError(
+                "The Kathara network plugin cannot be installed on a remote Podman connection "
+                f"(`{socket_url}`): install it on the remote host."
+            )
 
         changed = False
         if self._installed_version() != PLUGIN_VERSION:
