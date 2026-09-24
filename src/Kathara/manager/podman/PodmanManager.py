@@ -99,11 +99,16 @@ class PodmanManager(IManager):
 
         Raises:
             LabNotFoundError: If the specified device is not associated to any network scenario.
-            PrivilegeError: If the user start the device in privileged mode without having root privileges.
+            NotSupportedError: If the device requires privileged mode.
             NonSequentialMachineInterfaceError: If there is a missing interface number in any device of the lab.
         """
         if not machine.lab:
             raise LabNotFoundError("Device `%s` is not associated to a network scenario." % machine.name)
+
+        # Checked before deploying anything (links included), so a lab is never left half deployed
+        # when Kathará is used as a library (the CLI has its own, earlier check for this).
+        if machine.is_privileged():
+            not_supported_in_rootless("Privileged devices")
 
         machine.check()
 
@@ -143,7 +148,7 @@ class PodmanManager(IManager):
 
         Raises:
             NonSequentialMachineInterfaceError: If there is a missing interface number in any device of the lab.
-            PrivilegeError: If the user start the network scenario in privileged mode without having root privileges.
+            NotSupportedError: If any of the devices to deploy requires privileged mode.
             MachineNotFoundError: If the specified devices are not in the network scenario.
             InvocationError: If both `selected_machines` and `excluded_machines` are specified.
         """
@@ -159,6 +164,18 @@ class PodmanManager(IManager):
         if excluded_machines and not lab.has_machines(excluded_machines):
             machines_not_in_lab = excluded_machines - set(lab.machines.keys())
             raise MachineNotFoundError(f"The following devices are not in the network scenario: {machines_not_in_lab}.")
+
+        if selected_machines:
+            machines_to_deploy = {k: v for k, v in lab.machines.items() if k in selected_machines}
+        elif excluded_machines:
+            machines_to_deploy = {k: v for k, v in lab.machines.items() if k not in excluded_machines}
+        else:
+            machines_to_deploy = lab.machines
+
+        # Checked before deploying anything (links included), so a lab is never left half deployed
+        # when Kathará is used as a library (the CLI has its own, earlier check for this).
+        if any(machine.is_privileged() for machine in machines_to_deploy.values()):
+            not_supported_in_rootless("Privileged devices")
 
         selected_links = None
         if selected_machines:
