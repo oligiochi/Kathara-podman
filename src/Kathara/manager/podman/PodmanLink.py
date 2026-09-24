@@ -19,7 +19,7 @@ from ...types import SharedCollisionDomainsOption
 # The default bridge network Podman creates for containers not attached to a user-defined network.
 # Used for Kathará's "bridged" device option, mirroring DockerLink.get_docker_bridge().
 DEFAULT_BRIDGE_NETWORK_NAME = "podman"
-NETWORK_PLUGIN_DRIVER = "katharanp"
+NETWORK_PLUGIN_DRIVER = "katharanp_vde"
 
 class PodmanLink(object):
     """The class responsible for deploying Kathara collision domains as Podman networks and interact with them."""
