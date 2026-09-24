@@ -313,18 +313,22 @@ class PodmanMachine(object):
 
         volumes = {}
         mounts = []
-
+        disable_selinux_label = False
+        
         lab_options = machine.lab.general_options
         shared_mount = lab_options['shared_mount'] if 'shared_mount' in lab_options else \
             Setting.get_instance().shared_mount
         if shared_mount and machine.lab.shared_path:
-            volumes[machine.lab.shared_path] = {'bind': '/shared', 'mode': 'rw'}
-
+            #volumes[machine.lab.shared_path] = {'bind': '/shared', 'mode': 'rw'}
+            # /shared is a Kathará-owned lab folder: relabeling it for containers (SELinux `z`) is safe,
+            # and keeps the device confined
+            volumes[machine.lab.shared_path] = {'bind': '/shared', 'mode': 'rw', 'extended_mode': ['z']}
         # Mount the host home only if specified in settings.
         hosthome_mount = lab_options['hosthome_mount'] if 'hosthome_mount' in lab_options else \
             Setting.get_instance().hosthome_mount
         if hosthome_mount:
             volumes[utils.get_current_user_home()] = {'bind': '/hosthome', 'mode': 'rw'}
+            disable_selinux_label = True
 
         try:
             for host_path, volume in machine.get_volumes().items():
@@ -410,6 +414,9 @@ class PodmanMachine(object):
                 create_kwargs["network_mode"] = "bridge"
             else:
                 create_kwargs["network_mode"] = "none"
+            
+            if disable_selinux_label:                                                    # NUOVO
+                create_kwargs["security_opt"] = ["disable"]
 
             machine_container = self.client.containers.create(**create_kwargs)
         except APIError as e:
