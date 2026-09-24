@@ -179,6 +179,48 @@ def test_create_first_interface_custom_sysctl_in_network_options_not_in_sysctls(
     assert all(not IFACE_SYSCTL_RE.match(k) for k in kwargs['sysctls'])
 
 
+#
+# TEST: SELinux mount labeling
+#
+@mock.patch("src.Kathara.manager.podman.PodmanMachine.PodmanMachine.get_machines_api_objects_by_filters")
+@mock.patch("src.Kathara.manager.podman.PodmanMachine.PodmanMachine.copy_files")
+@mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
+@mock.patch("src.Kathara.utils.get_current_user_name")
+def test_create_shared_mount_only_keeps_selinux_confinement(
+        mock_get_current_user_name, mock_setting_get_instance, mock_copy_files,
+        mock_get_machines_api_objects_by_filters, podman_machine, default_device):
+    mock_get_machines_api_objects_by_filters.return_value = []
+    mock_get_current_user_name.return_value = "test-user"
+    mock_setting_get_instance.return_value = _setting_mock(shared_mount=True)
+    default_device.lab.shared_path = "/tmp/shared"
+
+    podman_machine.create(default_device)
+
+    _, kwargs = podman_machine.client.containers.create.call_args
+    assert kwargs['volumes']["/tmp/shared"] == {'bind': '/shared', 'mode': 'rw', 'extended_mode': ['z']}
+    assert 'security_opt' not in kwargs
+
+
+@mock.patch("src.Kathara.manager.podman.PodmanMachine.PodmanMachine.get_machines_api_objects_by_filters")
+@mock.patch("src.Kathara.manager.podman.PodmanMachine.PodmanMachine.copy_files")
+@mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
+@mock.patch("src.Kathara.utils.get_current_user_name")
+@mock.patch("src.Kathara.utils.get_current_user_home")
+def test_create_hosthome_mount_disables_selinux_label(
+        mock_get_current_user_home, mock_get_current_user_name, mock_setting_get_instance, mock_copy_files,
+        mock_get_machines_api_objects_by_filters, podman_machine, default_device):
+    mock_get_machines_api_objects_by_filters.return_value = []
+    mock_get_current_user_name.return_value = "test-user"
+    mock_get_current_user_home.return_value = "/home/test-user"
+    mock_setting_get_instance.return_value = _setting_mock(hosthome_mount=True)
+
+    podman_machine.create(default_device)
+
+    _, kwargs = podman_machine.client.containers.create.call_args
+    assert kwargs['volumes']["/home/test-user"] == {'bind': '/hosthome', 'mode': 'rw'}
+    assert kwargs['security_opt'] == ["disable"]
+
+
 @mock.patch("src.Kathara.manager.podman.PodmanMachine.PodmanMachine.get_machines_api_objects_by_filters")
 @mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
 @mock.patch("src.Kathara.utils.get_current_user_name")
