@@ -15,6 +15,7 @@ from requests.exceptions import ConnectionError as RequestsConnectionError
 from .PodmanImage import PodmanImage
 from .PodmanLink import PodmanLink
 from .PodmanMachine import PodmanMachine, IFACES_LABEL
+from .rootless import not_supported_in_rootless
 from .exec_stream.PodmanExecStream import PodmanExecStream
 from .stats.PodmanLinkStats import PodmanLinkStats
 from .stats.PodmanMachineStats import PodmanMachineStats
@@ -362,7 +363,13 @@ class PodmanManager(IManager):
 
         Returns:
             None
+
+        Raises:
+            NotSupportedError: If all_users is True.
         """
+        if all_users:
+            not_supported_in_rootless("Wiping the devices of all users")
+
         user_name = utils.get_current_user_name() if not all_users else None
 
         self.podman_machine.wipe(user=user_name)

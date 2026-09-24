@@ -77,19 +77,31 @@ def test_create_idempotent(mock_get_current_user_name, mock_setting_get_instance
     assert not podman_link.client.networks.create.called
 
 
-@mock.patch("src.Kathara.manager.podman.PodmanLink.PodmanLink.get_links_api_objects_by_filters")
+@mock.patch("src.Kathara.manager.podman.PodmanLink.PodmanLink._deploy_link")
 @mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
-@mock.patch("src.Kathara.utils.get_current_user_name")
-def test_create_external_not_supported(mock_get_current_user_name, mock_setting_get_instance, mock_get_links,
-                                       podman_link, default_lab):
-    mock_get_links.return_value = []
-    mock_get_current_user_name.return_value = "test-user"
+def test_deploy_links_external_not_supported(mock_setting_get_instance, mock_deploy_link, podman_link, default_lab):
     mock_setting_get_instance.return_value = _setting_mock()
 
     link = default_lab.get_or_new_link("A")
     link.external.append(ExternalLink("eth0"))
 
-    with pytest.raises(NotSupportedError):
-        podman_link.create(link)
+    with pytest.raises(NotSupportedError, match="External collision domains"):
+        podman_link.deploy_links(default_lab)
 
+    assert not mock_deploy_link.called
+    assert not podman_link.client.networks.create.called
+
+
+@mock.patch("src.Kathara.manager.podman.PodmanLink.PodmanLink._deploy_link")
+@mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
+def test_deploy_links_shared_between_users_not_supported(mock_setting_get_instance, mock_deploy_link, podman_link,
+                                                          default_lab):
+    mock_setting_get_instance.return_value = _setting_mock(shared_cds=SharedCollisionDomainsOption.USERS)
+
+    default_lab.get_or_new_link("A")
+
+    with pytest.raises(NotSupportedError, match="Collision domains shared between users"):
+        podman_link.deploy_links(default_lab)
+
+    assert not mock_deploy_link.called
     assert not podman_link.client.networks.create.called
