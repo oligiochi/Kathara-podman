@@ -1,5 +1,6 @@
 import json
 import struct
+import urllib.parse
 from typing import Any, Dict, Generator, List, Optional, Tuple, Union
 import shlex
 from podman import PodmanClient
@@ -242,6 +243,29 @@ class LibpodCompat(object):
         )
         resp.raise_for_status()
     
+    def inspect_remote_manifest(self, name: str) -> Dict[str, Any]:
+        """Query the registry for the manifest of a tagged image reference, without pulling it.
+
+        The compat `/distribution/{name}/json` endpoint and podman-py's `get_registry_data` never
+        leave local storage; only this libpod endpoint actually reaches the registry (see
+        MATRICE-PARITA-ROOTLESS.md, P22).
+
+        Args:
+            name (str): The fully qualified image reference to inspect
+                (e.g. `docker.io/kathara/base:latest`).
+
+        Returns:
+            Dict[str, Any]: The manifest, or manifest index, as returned by the registry.
+
+        Raises:
+            APIError: If the registry lookup fails (image or tag not found, registry unreachable,
+                rate limited, ...).
+        """
+        encoded_name = urllib.parse.quote(name, safe="/:")
+        resp = self._api.get(f"/manifests/{encoded_name}/json", params={"tlsVerify": "true"})
+        resp.raise_for_status()
+        return resp.json()
+
     @staticmethod
     def container_status(container: Container) -> str:
         """Return the status of a container, whatever format its attributes come from.
