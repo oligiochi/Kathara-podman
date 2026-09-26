@@ -72,9 +72,12 @@ class PodmanMachineStats(IMachineStats):
         except NotFound:
             # Happens while deleting
             pass
+        if updated_stats.get("Error") or not updated_stats.get("Stats"):
+            return
+        entry = updated_stats["Stats"][0]
 
         self.status = LibpodCompat.container_status(self.machine_api_object)
-        self.pids = updated_stats['pids_stats']['current'] if 'current' in updated_stats.get('pids_stats', {}) else 0
+        self.pids = entry.get("PIDs", 0)
 
         # Native libpod network-attachment data has no equivalent of Docker's endpoint DriverOpts: the
         # interface number is read back from the `kathara-eth<N>` alias of each attachment instead
@@ -108,30 +111,17 @@ class PodmanMachineStats(IMachineStats):
         else:
             self.interfaces = "-"
 
-        if self._prev_stats:
-            if "system_cpu_usage" in updated_stats["cpu_stats"] and "system_cpu_usage" in self._prev_stats["cpu_stats"]:
-                cpu_delta = updated_stats["cpu_stats"]["cpu_usage"]["total_usage"] - \
-                            self._prev_stats["cpu_stats"]["cpu_usage"]["total_usage"]
-                system_delta = updated_stats["cpu_stats"]["system_cpu_usage"] - \
-                               self._prev_stats["cpu_stats"]["system_cpu_usage"]
-                if system_delta > 0:
-                    cpu_usage = (cpu_delta / system_delta) * updated_stats["cpu_stats"]["online_cpus"] * 100
-                    self.cpu_usage = f"{cpu_usage:.2f}%"
+        # CPU is already a percentage computed by Podman between two samples (no deltas needed, unlike Docker).
+        self.cpu_usage = f"{entry.get('CPU', 0):.2f}%"
 
-        if "usage" in updated_stats.get("memory_stats", {}):
-            usage = updated_stats["memory_stats"]["usage"]
-            limit = updated_stats["memory_stats"]["limit"]
-            self.mem_usage = human_readable_bytes(usage) + " / " + human_readable_bytes(limit)
-            if limit:
-                self.mem_percent = f"{((usage / limit) * 100):.2f} %"
+        usage, limit = entry.get("MemUsage", 0), entry.get("MemLimit", 0)
+        self.mem_usage = human_readable_bytes(usage) + " / " + human_readable_bytes(limit)
+        self.mem_percent = f"{entry.get('MemPerc', 0):.2f} %"
 
-        if "networks" in updated_stats:
-            network_stats = updated_stats["networks"] if "networks" in updated_stats else {}
-            rx_bytes = sum([net_stats["rx_bytes"] for (_, net_stats) in network_stats.items()])
-            tx_bytes = sum([net_stats["tx_bytes"] for (_, net_stats) in network_stats.items()])
-            self.net_usage = human_readable_bytes(rx_bytes) + " / " + human_readable_bytes(tx_bytes)
-
-        self._prev_stats = updated_stats
+        networks = entry.get("Network") or {}
+        rx_bytes = sum(net.get("RxBytes", 0) for net in networks.values())
+        tx_bytes = sum(net.get("TxBytes", 0) for net in networks.values())
+        self.net_usage = human_readable_bytes(rx_bytes) + " / " + human_readable_bytes(tx_bytes)
 
     def to_dict(self) -> Dict[str, Any]:
         """Transform statistics into a dict representation.
