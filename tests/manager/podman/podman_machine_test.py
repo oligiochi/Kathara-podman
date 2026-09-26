@@ -6,7 +6,8 @@ import pytest
 
 sys.path.insert(0, './')
 
-from src.Kathara.manager.podman.PodmanMachine import PodmanMachine, IFACES_LABEL, CPU_PERIOD, IFACE_SYSCTL_RE
+from src.Kathara.manager.podman.PodmanMachine import PodmanMachine, CPU_PERIOD, IFACE_SYSCTL_RE, \
+    IFACE_ALIAS_PREFIX, build_iface_alias, parse_iface_alias, get_container_ifaces
 from src.Kathara.model.Lab import Lab
 from src.Kathara.model.Link import Link
 from src.Kathara.model.Machine import Machine
@@ -102,7 +103,6 @@ def test_create_no_interfaces(mock_get_current_user_name, mock_setting_get_insta
     assert kwargs['labels']['name'] == 'test_device'
     assert kwargs['labels']['user'] == 'test-user'
     assert kwargs['labels']['app'] == 'kathara'
-    assert IFACES_LABEL not in kwargs['labels']
 
     assert not mock_copy_files.called
 
@@ -131,6 +131,7 @@ def test_create_with_first_interface(mock_get_current_user_name, mock_setting_ge
     assert kwargs['networks'] == {
         'podman_link_a': {
             'interface_name': 'eth0',
+            'aliases': ['kathara-eth0'],
             'static_mac': '00:00:00:00:00:01',
             'options': {
                 'sysctl.net.ipv4.conf.eth0.rp_filter': '0',
@@ -146,10 +147,6 @@ def test_create_with_first_interface(mock_get_current_user_name, mock_setting_ge
     assert all(not IFACE_SYSCTL_RE.match(k) for k in kwargs['sysctls'])
     # Sysctl values must all be strings for the Podman API.
     assert all(isinstance(v, str) for v in kwargs['sysctls'].values())
-
-    import json
-    ifaces = json.loads(kwargs['labels'][IFACES_LABEL])
-    assert ifaces == {"A": {"num": 0, "mac_address": "00:00:00:00:00:01"}}
 
 
 @mock.patch("src.Kathara.manager.podman.PodmanMachine.PodmanMachine.get_machines_api_objects_by_filters")
@@ -260,7 +257,8 @@ def test_connect_interface(mock_setting_get_instance, mock_network_connect, podm
         sysctls={
             "net.ipv4.conf.eth0.rp_filter": 0,
             "net.ipv6.conf.eth0.disable_ipv6": 1,
-        }
+        },
+        aliases=["kathara-eth0"],
     )
 
 
@@ -303,3 +301,121 @@ def test_get_container_name():
 
         name = PodmanMachine.get_container_name("pc1", "lab_hash")
         assert name == "dev_prefix_test-user_pc1_lab_hash"
+
+
+#
+# TEST: build_iface_alias / parse_iface_alias
+#
+def test_build_iface_alias():
+    assert build_iface_alias(0) == "kathara-eth0"
+    assert build_iface_alias(12) == "kathara-eth12"
+
+
+def test_parse_iface_alias_valid():
+    assert parse_iface_alias("kathara-eth0") == 0
+    assert parse_iface_alias("kathara-eth12") == 12
+
+
+def test_parse_iface_alias_invalid():
+    assert parse_iface_alias("eth0") is None
+    assert parse_iface_alias("kathara-eth") is None
+    assert parse_iface_alias("some-other-alias") is None
+    assert parse_iface_alias("kathara-eth1x") is None
+    assert parse_iface_alias(f"{IFACE_ALIAS_PREFIX}-1") is None
+
+
+#
+# TEST: _get_network_options
+#
+@mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
+def test_get_network_options_includes_alias(mock_setting_get_instance, podman_machine, default_device, default_link):
+    mock_setting_get_instance.return_value = _setting_mock()
+    interface = default_device.add_interface(default_link, mac_address="00:00:00:00:00:09", number=3)
+
+    options = podman_machine._get_network_options(default_device, interface)
+
+    assert options["interface_name"] == "eth3"
+    assert options["aliases"] == ["kathara-eth3"]
+    assert options["static_mac"] == "00:00:00:00:00:09"
+
+
+@mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
+def test_get_network_options_alias_without_mac(mock_setting_get_instance, podman_machine, default_device,
+                                                default_link):
+    mock_setting_get_instance.return_value = _setting_mock()
+    interface = default_device.add_interface(default_link, number=0)
+
+    options = podman_machine._get_network_options(default_device, interface)
+
+    assert options["aliases"] == ["kathara-eth0"]
+    assert "static_mac" not in options
+
+
+#
+# TEST: get_container_ifaces
+#
+def _kathara_network_mock(link_name):
+    network = Mock()
+    network.attrs = {"labels": {"name": link_name}}
+    return network
+
+
+def test_get_container_ifaces_three_networks_one_non_kathara():
+    container = Mock()
+    container.attrs = {
+        "NetworkSettings": {
+            "Networks": {
+                "podman_link_a": {"Aliases": ["kathara-eth0"], "MacAddress": "00:00:00:00:00:01"},
+                "podman_link_b": {"Aliases": ["kathara-eth1"], "MacAddress": "00:00:00:00:00:02"},
+                # Not a Kathará network (e.g. the default Podman bridge used for bridged devices):
+                # absent from `networks_by_name`, so it must be skipped even though it has an alias.
+                "podman": {"Aliases": ["kathara-eth2"], "MacAddress": "00:00:00:00:00:03"},
+            }
+        }
+    }
+    networks_by_name = {
+        "podman_link_a": _kathara_network_mock("A"),
+        "podman_link_b": _kathara_network_mock("B"),
+    }
+
+    ifaces = get_container_ifaces(container, networks_by_name)
+
+    assert set(ifaces.keys()) == {"A", "B"}
+    assert ifaces["A"]["num"] == 0
+    assert ifaces["A"]["mac_address"] == "00:00:00:00:00:01"
+    assert ifaces["A"]["network"] is networks_by_name["podman_link_a"]
+    assert ifaces["B"]["num"] == 1
+    assert ifaces["B"]["mac_address"] == "00:00:00:00:00:02"
+
+
+def test_get_container_ifaces_skips_network_without_kathara_alias():
+    container = Mock()
+    container.attrs = {
+        "NetworkSettings": {
+            "Networks": {
+                "podman_link_a": {"Aliases": [], "MacAddress": "00:00:00:00:00:01"},
+                "podman_link_b": {"Aliases": ["some-other-alias"], "MacAddress": "00:00:00:00:00:02"},
+            }
+        }
+    }
+    networks_by_name = {
+        "podman_link_a": _kathara_network_mock("A"),
+        "podman_link_b": _kathara_network_mock("B"),
+    }
+
+    assert get_container_ifaces(container, networks_by_name) == {}
+
+
+def test_get_container_ifaces_skips_network_without_name_label():
+    container = Mock()
+    container.attrs = {
+        "NetworkSettings": {
+            "Networks": {
+                "podman_link_a": {"Aliases": ["kathara-eth0"], "MacAddress": "00:00:00:00:00:01"},
+            }
+        }
+    }
+    unlabeled_network = Mock()
+    unlabeled_network.attrs = {"labels": {}}
+
+    assert get_container_ifaces(container, {"podman_link_a": unlabeled_network}) == {}
