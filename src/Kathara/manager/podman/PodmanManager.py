@@ -3,8 +3,8 @@ import logging
 import os
 from typing import Set, Dict, Generator, Tuple, List, Optional, Union
 
-from Kathara.manager.podman.PodmanPlugin import PodmanPlugin
-from Kathara.manager.podman.libpod_compat import LibpodCompat
+from .PodmanPlugin import PodmanPlugin
+from .libpod_compat import LibpodCompat
 import podman.domain.containers
 import podman.domain.networks
 from podman import PodmanClient

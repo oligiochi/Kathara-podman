@@ -1,13 +1,13 @@
 import re
 from typing import Dict, Any, Generator, Optional
 
-from Kathara.manager.podman.libpod_compat import LibpodCompat
 from podman.domain.containers import Container
 from podman.errors import NotFound
 
 from ....decorators import privileged
 from ....foundation.manager.stats.IMachineStats import IMachineStats
 from ....utils import human_readable_bytes
+from ..libpod_compat import LibpodCompat
 
 # Keep in sync with `PodmanMachine.IFACE_ALIAS_PREFIX`/`parse_iface_alias`. Duplicated as a literal
 # (rather than imported) to avoid a circular import between PodmanMachine and this module, same as
