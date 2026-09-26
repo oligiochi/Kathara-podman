@@ -201,14 +201,31 @@ def test_network_connect_full_body():
     libpod, api, _ = _libpod_mock()
 
     libpod.network_connect("net_a", "container1", "eth1", mac_address="02:00:00:00:00:01",
-                           sysctls={"net.ipv4.conf.eth1.rp_filter": 0})
+                           sysctls={"net.ipv4.conf.eth1.rp_filter": 0}, aliases=["kathara-eth1"])
 
     assert json.loads(api.post.call_args.kwargs["data"]) == {
         "container": "container1",
         "interface_name": "eth1",
         "static_mac": "02:00:00:00:00:01",
         "options": {"sysctl.net.ipv4.conf.eth1.rp_filter": "0"},
+        "aliases": ["kathara-eth1"],
     }
+
+
+def test_network_connect_aliases_omitted_when_not_set():
+    libpod, api, _ = _libpod_mock()
+
+    libpod.network_connect("net_a", "container1", "eth1")
+
+    assert "aliases" not in json.loads(api.post.call_args.kwargs["data"])
+
+
+def test_network_connect_aliases_omitted_when_empty():
+    libpod, api, _ = _libpod_mock()
+
+    libpod.network_connect("net_a", "container1", "eth1", aliases=[])
+
+    assert "aliases" not in json.loads(api.post.call_args.kwargs["data"])
 
 
 def test_network_connect_accepts_podman_objects():

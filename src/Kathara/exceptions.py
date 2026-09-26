@@ -173,6 +173,8 @@ class DockerImageNotFoundError(Exception):
 class DockerPluginError(Exception):
     pass
 
+class PodmanPluginError(Exception):
+    pass
 
 # Kubernetes Exceptions
 class KubernetesConfigMapError(Exception):

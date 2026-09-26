@@ -1,10 +1,10 @@
 import io
-import json
 import logging
 import os
 from typing import Set, Dict, Generator, Tuple, List, Optional, Union
 
-from Kathara.manager.podman.libpod_compat import LibpodCompat
+from .PodmanPlugin import PodmanPlugin
+from .libpod_compat import LibpodCompat
 import podman.domain.containers
 import podman.domain.networks
 from podman import PodmanClient
@@ -14,7 +14,8 @@ from requests.exceptions import ConnectionError as RequestsConnectionError
 
 from .PodmanImage import PodmanImage
 from .PodmanLink import PodmanLink
-from .PodmanMachine import PodmanMachine, IFACES_LABEL
+from .PodmanMachine import PodmanMachine, get_container_ifaces
+from .rootless import not_supported_in_rootless
 from .exec_stream.PodmanExecStream import PodmanExecStream
 from .stats.PodmanLinkStats import PodmanLinkStats
 from .stats.PodmanMachineStats import PodmanMachineStats
@@ -85,6 +86,7 @@ class PodmanManager(IManager):
         self.podman_image: PodmanImage = PodmanImage(self.client)
         self.podman_machine: PodmanMachine = PodmanMachine(self.client, self.podman_image)
         self.podman_link: PodmanLink = PodmanLink(self.client)
+        PodmanPlugin().check_and_download_plugin()
 
     @privileged
     def deploy_machine(self, machine: Machine) -> None:
@@ -98,11 +100,16 @@ class PodmanManager(IManager):
 
         Raises:
             LabNotFoundError: If the specified device is not associated to any network scenario.
-            PrivilegeError: If the user start the device in privileged mode without having root privileges.
+            NotSupportedError: If the device requires privileged mode.
             NonSequentialMachineInterfaceError: If there is a missing interface number in any device of the lab.
         """
         if not machine.lab:
             raise LabNotFoundError("Device `%s` is not associated to a network scenario." % machine.name)
+
+        # Checked before deploying anything (links included), so a lab is never left half deployed
+        # when Kathará is used as a library (the CLI has its own, earlier check for this).
+        if machine.is_privileged():
+            not_supported_in_rootless("Privileged devices")
 
         machine.check()
 
@@ -142,7 +149,7 @@ class PodmanManager(IManager):
 
         Raises:
             NonSequentialMachineInterfaceError: If there is a missing interface number in any device of the lab.
-            PrivilegeError: If the user start the network scenario in privileged mode without having root privileges.
+            NotSupportedError: If any of the devices to deploy requires privileged mode.
             MachineNotFoundError: If the specified devices are not in the network scenario.
             InvocationError: If both `selected_machines` and `excluded_machines` are specified.
         """
@@ -158,6 +165,18 @@ class PodmanManager(IManager):
         if excluded_machines and not lab.has_machines(excluded_machines):
             machines_not_in_lab = excluded_machines - set(lab.machines.keys())
             raise MachineNotFoundError(f"The following devices are not in the network scenario: {machines_not_in_lab}.")
+
+        if selected_machines:
+            machines_to_deploy = {k: v for k, v in lab.machines.items() if k in selected_machines}
+        elif excluded_machines:
+            machines_to_deploy = {k: v for k, v in lab.machines.items() if k not in excluded_machines}
+        else:
+            machines_to_deploy = lab.machines
+
+        # Checked before deploying anything (links included), so a lab is never left half deployed
+        # when Kathará is used as a library (the CLI has its own, earlier check for this).
+        if any(machine.is_privileged() for machine in machines_to_deploy.values()):
+            not_supported_in_rootless("Privileged devices")
 
         selected_links = None
         if selected_machines:
@@ -362,7 +381,13 @@ class PodmanManager(IManager):
 
         Returns:
             None
+
+        Raises:
+            NotSupportedError: If all_users is True.
         """
+        if all_users:
+            not_supported_in_rootless("Wiping the devices of all users")
+
         user_name = utils.get_current_user_name() if not all_users else None
 
         self.podman_machine.wipe(user=user_name)
@@ -742,20 +767,12 @@ class PodmanManager(IManager):
                 device.add_meta("bridged_iface", int(container.labels['bridged_iface']))
 
             # Native libpod network-attachment data has no equivalent of Docker's endpoint DriverOpts:
-            # interface number, link name and MAC are read back from the `kathara.ifaces` label
-            # instead (see PodmanMachine.IFACES_LABEL / _encode_ifaces_label).
-            ifaces_meta = json.loads(container.labels.get(IFACES_LABEL) or "{}")
-            attached_networks = container.attrs.get("NetworkSettings", {}).get("Networks", {}) or {}
-            ordered_ifaces = sorted(
-                ((name, ifaces_meta[name]) for name in attached_networks if name in ifaces_meta),
-                key=lambda item: item[1]["num"]
-            )
-            for network_name, iface_info in ordered_ifaces:
-                if network_name not in lab_networks:
-                    continue
-                network = lab_networks[network_name]
-                link = reconstructed_lab.get_or_new_link(network.attrs["labels"]["name"])
-                link.api_object = network
+            # interface number, link name and MAC are read back from the `kathara-eth<N>` network
+            # alias instead (see PodmanMachine.get_container_ifaces).
+            ifaces = get_container_ifaces(container, lab_networks)
+            for link_name, iface_info in sorted(ifaces.items(), key=lambda item: item[1]["num"]):
+                link = reconstructed_lab.get_or_new_link(link_name)
+                link.api_object = iface_info["network"]
                 device.add_interface(link, mac_address=iface_info.get("mac_address"), number=iface_info["num"])
 
         return reconstructed_lab
@@ -791,20 +808,16 @@ class PodmanManager(IManager):
             # Collision domains declared in the network scenario
             static_links = set([x.link for x in device.interfaces.values()])
 
-            ifaces_meta = json.loads(container.labels.get(IFACES_LABEL) or "{}")
-            attached_networks = container.attrs.get("NetworkSettings", {}).get("Networks", {}) or {}
-            ordered_ifaces = sorted(
-                ((name, ifaces_meta[name]) for name in attached_networks if name in ifaces_meta),
-                key=lambda item: item[1]["num"]
-            )
+            # Native libpod network-attachment data has no equivalent of Docker's endpoint DriverOpts:
+            # interface number, link name and MAC are read back from the `kathara-eth<N>` network
+            # alias instead (see PodmanMachine.get_container_ifaces).
+            ifaces = get_container_ifaces(container, deployed_networks)
 
             # Collision domains currently attached to the device
             current_links = set()
             current_ifaces = {}
-            for network_name, iface_info in ordered_ifaces:
-                if network_name not in deployed_networks:
-                    continue
-                link = lab.get_or_new_link(deployed_networks[network_name].attrs["labels"]["name"])
+            for link_name, iface_info in sorted(ifaces.items(), key=lambda item: item[1]["num"]):
+                link = lab.get_or_new_link(link_name)
                 current_links.add(link)
                 current_ifaces[link.name] = iface_info
 
