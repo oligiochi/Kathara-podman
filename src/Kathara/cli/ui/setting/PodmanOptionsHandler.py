@@ -19,10 +19,10 @@ class PodmanOptionsHandler(OptionsHandler):
             subtitle=setting_utils.current_bool("hosthome_mount"),
             prologue_text="""The home directory of the current user is made available for """
                           """reading/writing inside the device under the special directory `/hosthome`.
-
+                          
                           On SELinux hosts, enabling this option also disables label separation """
                           """for the devices (`label=disable`), since the home directory is not relabeled.
-
+                          
                           Default is %s.""" %
                           setting_utils.format_bool(DEFAULTS['hosthome_mount']),
             formatter=menu_formatter
@@ -55,7 +55,7 @@ class PodmanOptionsHandler(OptionsHandler):
             subtitle=setting_utils.current_bool("shared_mount"),
             prologue_text="""The shared directory inside the network scenario folder is """
                           """made available for reading/writing inside the device under the special directory `/shared`.
-
+                          
                           Default is %s.""" %
                           setting_utils.format_bool(DEFAULTS['shared_mount']),
             formatter=menu_formatter
@@ -87,7 +87,7 @@ class PodmanOptionsHandler(OptionsHandler):
             title=image_update_policy_string,
             subtitle=setting_utils.current_string("image_update_policy"),
             prologue_text="""Choose the policy when a Podman image update is available for a running device.
-
+                          
                           \tDefault is %s.""" % DEFAULTS['image_update_policy'],
             formatter=menu_formatter
         )
@@ -126,10 +126,10 @@ class PodmanOptionsHandler(OptionsHandler):
             title=shared_cds_string,
             subtitle=setting_utils.current_enum("shared_cds", SharedCollisionDomainsOption.to_string),
             prologue_text="""This option allows sharing collision domains between network scenarios of the same user.
-
+                          
                           Sharing collision domains between users is not supported in rootless Podman: """
                           """each user has its own Podman, containers and networks.
-
+                          
                           Default is: %s.""" % SharedCollisionDomainsOption.to_string(DEFAULTS['shared_cds']),
             formatter=menu_formatter
         )
@@ -163,7 +163,7 @@ class PodmanOptionsHandler(OptionsHandler):
             prologue_text="""You can specify a custom local Podman socket URL """
                           """(format unix:///path/to/podman.sock), instead of the """
                           """automatically detected rootless user socket.
-
+                          
                           Default is %s.""" % DEFAULTS['api_socket_url'],
             formatter=menu_formatter
         )

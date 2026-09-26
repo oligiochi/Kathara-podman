@@ -161,8 +161,7 @@ class PodmanImage(object):
         except InvalidImageArchitectureError as e:
             raise e
         except (ImageNotFound, APIError):
-            # Not found locally: the only way to verify it exists remotely is to actually pull it,
-            # since podman-py has no registry-inspection endpoint (see check_for_updates above).
+            # Not found locally: pull it, which also verifies that it exists on the registry.
             if not pull:
                 raise DockerImageNotFoundError(image_name)
 
