@@ -1,4 +1,3 @@
-import re
 from typing import Dict, Any, Generator, Optional
 
 from podman.domain.containers import Container
@@ -7,13 +6,8 @@ from podman.errors import NotFound
 from ....decorators import privileged
 from ....foundation.manager.stats.IMachineStats import IMachineStats
 from ....utils import human_readable_bytes
+from ..interfaces import parse_iface_alias
 from ..libpod_compat import LibpodCompat
-
-# Keep in sync with `PodmanMachine.IFACE_ALIAS_PREFIX`/`parse_iface_alias`. Duplicated as a literal
-# (rather than imported) to avoid a circular import between PodmanMachine and this module, same as
-# DockerMachineStats keeps its own 'kathara.iface'/'kathara.link' literals instead of importing
-# them from DockerMachine.
-IFACE_ALIAS_RE = re.compile(r"^kathara-eth(\d+)$")
 
 
 class PodmanMachineStats(IMachineStats):
@@ -86,12 +80,8 @@ class PodmanMachineStats(IMachineStats):
         ifaces = {}
         attached_networks = self.machine_api_object.attrs.get("NetworkSettings", {}).get("Networks", {}) or {}
         for network_name, net_settings in attached_networks.items():
-            iface_num = None
-            for alias in net_settings.get("Aliases") or []:
-                match = IFACE_ALIAS_RE.match(alias)
-                if match:
-                    iface_num = int(match.group(1))
-                    break
+            iface_num = next((num for num in map(parse_iface_alias, net_settings.get("Aliases") or [])
+                              if num is not None), None)
             if iface_num is None:
                 continue
 

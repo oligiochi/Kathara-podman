@@ -15,6 +15,7 @@ import podman.domain.networks
 from podman import PodmanClient
 from podman.errors import APIError
 
+from .interfaces import IFACE_ALIAS_PREFIX, build_iface_alias, parse_iface_alias  # noqa: F401
 from .libpod_compat import LibpodCompat
 from .PodmanImage import PodmanImage
 from .exec_stream.PodmanExecStream import PodmanExecStream
@@ -41,39 +42,6 @@ OCI_RUNTIME_RE = re.compile(
 
 # Per-interface sysctls (`net.ipv{4,6}.{conf,neigh}.ethN.*`): group 2 is the interface name.
 IFACE_SYSCTL_RE = re.compile(r"net\.ipv[46]\.(conf|neigh)\.(eth\d+)\.")
-
-# Network alias used to persist the number of a Kathará interface. Labels cannot be updated on a
-# running container, but a network alias can be set both at container creation and at `connect()`
-# time, and is returned by inspect in `NetworkSettings.Networks[<network>].Aliases`:
-# `get_lab_from_api`/`update_lab_from_api` read it back from there instead of a label.
-IFACE_ALIAS_PREFIX = "kathara-eth"
-IFACE_ALIAS_RE = re.compile(rf"^{re.escape(IFACE_ALIAS_PREFIX)}(\d+)$")
-
-
-def build_iface_alias(interface_num: int) -> str:
-    """Return the network alias used to persist the number of a Kathará interface.
-
-    Args:
-        interface_num (int): The number of the interface (e.g. `1` for `eth1`).
-
-    Returns:
-        str: The alias, e.g. `kathara-eth1`.
-    """
-    return f"{IFACE_ALIAS_PREFIX}{interface_num}"
-
-
-def parse_iface_alias(alias: str) -> Optional[int]:
-    """Parse the interface number out of a `kathara-eth<N>` network alias.
-
-    Args:
-        alias (str): A network alias.
-
-    Returns:
-        Optional[int]: The interface number, or None if `alias` is not a Kathará interface alias.
-    """
-    match = IFACE_ALIAS_RE.match(alias)
-    return int(match.group(1)) if match else None
-
 
 def get_container_ifaces(container: podman.domain.containers.Container,
                          networks_by_name: Dict[str, podman.domain.networks.Network]) -> Dict[str, Dict[str, Any]]:
