@@ -40,9 +40,9 @@ def test_init_raises_when_ping_returns_false(mock_podman_client_cls, mock_settin
         PodmanManager()
 
 
-@mock.patch("src.Kathara.manager.podman.PodmanLink.PodmanLink")
-@mock.patch("src.Kathara.manager.podman.PodmanMachine.PodmanMachine")
-@mock.patch("src.Kathara.manager.podman.PodmanImage.PodmanImage")
+@mock.patch("src.Kathara.manager.podman.PodmanManager.PodmanLink")
+@mock.patch("src.Kathara.manager.podman.PodmanManager.PodmanMachine")
+@mock.patch("src.Kathara.manager.podman.PodmanManager.PodmanImage")
 @mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
 @mock.patch("src.Kathara.manager.podman.PodmanManager.PodmanClient")
 def test_init_success(mock_podman_client_cls, mock_setting_get_instance, mock_image, mock_machine, mock_link):
@@ -59,9 +59,9 @@ def test_get_formatted_manager_name():
     assert PodmanManager.get_formatted_manager_name() == "Podman (Kathara)"
 
 
-@mock.patch("src.Kathara.manager.podman.PodmanLink.PodmanLink")
-@mock.patch("src.Kathara.manager.podman.PodmanMachine.PodmanMachine")
-@mock.patch("src.Kathara.manager.podman.PodmanImage.PodmanImage")
+@mock.patch("src.Kathara.manager.podman.PodmanManager.PodmanLink")
+@mock.patch("src.Kathara.manager.podman.PodmanManager.PodmanMachine")
+@mock.patch("src.Kathara.manager.podman.PodmanManager.PodmanImage")
 @mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
 @mock.patch("src.Kathara.manager.podman.PodmanManager.PodmanClient")
 def test_wipe_all_users_not_supported(mock_podman_client_cls, mock_setting_get_instance, mock_image, mock_machine,
@@ -156,9 +156,9 @@ def test_default_podman_socket_rootful(monkeypatch):
     assert default_podman_socket() == "unix:///run/podman/podman.sock"
 
 
-@mock.patch("src.Kathara.manager.podman.PodmanLink.PodmanLink")
-@mock.patch("src.Kathara.manager.podman.PodmanMachine.PodmanMachine")
-@mock.patch("src.Kathara.manager.podman.PodmanImage.PodmanImage")
+@mock.patch("src.Kathara.manager.podman.PodmanManager.PodmanLink")
+@mock.patch("src.Kathara.manager.podman.PodmanManager.PodmanMachine")
+@mock.patch("src.Kathara.manager.podman.PodmanManager.PodmanImage")
 @mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
 @mock.patch("src.Kathara.manager.podman.PodmanManager.PodmanClient")
 def test_get_release_version_nested_shape(mock_podman_client_cls, mock_setting_get_instance, mock_image,
