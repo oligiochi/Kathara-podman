@@ -1,4 +1,3 @@
-import json
 import logging
 import re
 import shlex
@@ -12,6 +11,7 @@ from typing import List, Dict, Generator, Optional, Set, Tuple, Union, Any
 
 import chardet
 import podman.domain.containers
+import podman.domain.networks
 from podman import PodmanClient
 from podman.errors import APIError
 
@@ -42,10 +42,85 @@ OCI_RUNTIME_RE = re.compile(
 # Per-interface sysctls (`net.ipv{4,6}.{conf,neigh}.ethN.*`): group 2 is the interface name.
 IFACE_SYSCTL_RE = re.compile(r"net\.ipv[46]\.(conf|neigh)\.(eth\d+)\.")
 
-# Container label used to persist per-interface metadata (link name, interface number, MAC).
-# Native libpod network-attachment data has no equivalent of Docker's endpoint `DriverOpts`, so
-# `get_lab_from_api`/`update_lab_from_api` read this back instead of NetworkSettings.
-IFACES_LABEL = "kathara.ifaces"
+# Network alias used to persist the number of a Kathará interface. Labels cannot be updated on a
+# running container, but a network alias can be set both at container creation and at `connect()`
+# time, and is returned by inspect in `NetworkSettings.Networks[<network>].Aliases`:
+# `get_lab_from_api`/`update_lab_from_api` read it back from there instead of a label.
+IFACE_ALIAS_PREFIX = "kathara-eth"
+IFACE_ALIAS_RE = re.compile(rf"^{re.escape(IFACE_ALIAS_PREFIX)}(\d+)$")
+
+
+def build_iface_alias(interface_num: int) -> str:
+    """Return the network alias used to persist the number of a Kathará interface.
+
+    Args:
+        interface_num (int): The number of the interface (e.g. `1` for `eth1`).
+
+    Returns:
+        str: The alias, e.g. `kathara-eth1`.
+    """
+    return f"{IFACE_ALIAS_PREFIX}{interface_num}"
+
+
+def parse_iface_alias(alias: str) -> Optional[int]:
+    """Parse the interface number out of a `kathara-eth<N>` network alias.
+
+    Args:
+        alias (str): A network alias.
+
+    Returns:
+        Optional[int]: The interface number, or None if `alias` is not a Kathará interface alias.
+    """
+    match = IFACE_ALIAS_RE.match(alias)
+    return int(match.group(1)) if match else None
+
+
+def get_container_ifaces(container: podman.domain.containers.Container,
+                         networks_by_name: Dict[str, podman.domain.networks.Network]) -> Dict[str, Dict[str, Any]]:
+    """Rebuild the per-link interface metadata of a container from its network attachments.
+
+    Native libpod network-attachment data has no equivalent of Docker's endpoint `DriverOpts`: the
+    interface number is read back from the `kathara-eth<N>` alias of each attachment (see
+    `build_iface_alias`), and the MAC address from the attachment's `MacAddress`.
+
+    Args:
+        container (podman.domain.containers.Container): A Podman container, already reloaded.
+        networks_by_name (Dict[str, podman.domain.networks.Network]): Kathará Podman networks
+            (labeled `app=kathara`), keyed by Podman network name, used to resolve each attachment
+            to its Kathará link name through the network's `name` label.
+
+    Returns:
+        Dict[str, Dict[str, Any]]: The Kathará link name as key, and a dict with `num`, `mac_address`
+        and the resolved `network` (podman.domain.networks.Network) as value, for every attachment
+        that has a `kathara-eth<N>` alias and matches a Kathará network in `networks_by_name`.
+    """
+    attached_networks = container.attrs.get("NetworkSettings", {}).get("Networks", {}) or {}
+
+    ifaces = {}
+    for network_name, net_settings in attached_networks.items():
+        network = networks_by_name.get(network_name)
+        if network is None:
+            continue
+
+        link_name = network.attrs.get("labels", {}).get("name")
+        if not link_name:
+            continue
+
+        iface_num = None
+        for alias in net_settings.get("Aliases") or []:
+            iface_num = parse_iface_alias(alias)
+            if iface_num is not None:
+                break
+
+        if iface_num is None:
+            continue
+
+        ifaces[link_name] = {
+            "num": iface_num, "mac_address": net_settings.get("MacAddress") or None, "network": network
+        }
+
+    return ifaces
+
 
 # Kathará images declare `VOLUME /hosthome` and `VOLUME /shared`. Rootless Podman creates
 # anonymous, uninitialized named volumes for any declared VOLUME that isn't otherwise mounted,
@@ -364,7 +439,10 @@ class PodmanMachine(object):
         elif first_network:
             # Bridged-only device: the bridge is a plain Podman network, not a Kathará plugin network,
             # so it only gets the interface name Kathará expects (no MAC, no plugin sysctls).
-            networks = {first_network.name: {"interface_name": f"eth{machine.meta['bridged_iface']}"}}
+            networks = {first_network.name: {
+                "interface_name": f"eth{machine.meta['bridged_iface']}",
+                "aliases": [build_iface_alias(machine.meta['bridged_iface'])]
+            }}
 
         container_name = self.get_container_name(machine.name, machine.lab.hash)
 
@@ -379,8 +457,6 @@ class PodmanMachine(object):
                       }
             if machine.is_bridged():
                 labels["bridged_iface"] = str(machine.meta["bridged_iface"])
-            if first_machine_iface:
-                labels[IFACES_LABEL] = self._encode_ifaces_label({first_machine_iface.link.name: first_machine_iface})
 
             entrypoint = shlex.split(machine.meta["entrypoint"]) if "entrypoint" in machine.meta else None
             args = machine.meta["args"] if "args" in machine.meta and machine.meta["args"] else None
@@ -454,9 +530,8 @@ class PodmanMachine(object):
                 interface.link.api_object, machine.api_object, f"eth{interface.num}",
                 mac_address=interface.mac_address,
                 sysctls=self._get_iface_sysctls(machine, interface.num),
+                aliases=[build_iface_alias(interface.num)],
             )
-
-            self._update_ifaces_label(machine.api_object, interface)
 
     @staticmethod
     def _get_iface_sysctls(machine: Machine, interface_num: int) -> Dict[str, Any]:
@@ -495,47 +570,15 @@ class PodmanMachine(object):
             interface (Kathara.model.Interface.Interface): The interface attached at creation.
 
         Returns:
-            Dict[str, Any]: The libpod per-network options (interface name, static MAC, plugin options).
+            Dict[str, Any]: The libpod per-network options (interface name, alias, static MAC, plugin options).
         """
-        options = {"interface_name": f"eth{interface.num}"}
+        options = {"interface_name": f"eth{interface.num}", "aliases": [build_iface_alias(interface.num)]}
         if interface.mac_address:
             options["static_mac"] = interface.mac_address
         plugin_options = LibpodCompat.sysctl_options(self._get_iface_sysctls(machine, interface.num))
         if plugin_options:
             options["options"] = plugin_options
         return options
-
-    @staticmethod
-    def _encode_ifaces_label(ifaces: Dict[str, Interface]) -> str:
-        """Encode the interface -> link metadata stored in the `kathara.ifaces` container label.
-
-        Args:
-            ifaces (Dict[str, Interface]): A dict with link name as key and Interface object as value.
-
-        Returns:
-            str: A `;`-separated, `,`-field-encoded representation of the mapping.
-        """
-        return json.dumps({
-            link_name: {"num": iface.num, "mac_address": iface.mac_address}
-            for link_name, iface in ifaces.items()
-        })
-
-    def _update_ifaces_label(self, machine_api_object: podman.domain.containers.Container,
-                             interface: Interface) -> None:
-        """Add an interface to the `kathara.ifaces` label of a running container.
-
-        Args:
-            machine_api_object (podman.domain.containers.Container): A Podman container.
-            interface (Kathara.model.Interface.Interface): The interface that was just connected.
-
-        Returns:
-            None
-        """
-        current = json.loads(machine_api_object.labels.get(IFACES_LABEL) or "{}")
-        current[interface.link.name] = {"num": interface.num, "mac_address": interface.mac_address}
-        # Labels cannot be updated on a running container via the API: keep this best-effort, in-memory
-        # only, so `get_lab_from_api`/`update_lab_from_api` see it for the lifetime of this process.
-        machine_api_object.attrs.setdefault("Config", {}).setdefault("Labels", {})[IFACES_LABEL] = json.dumps(current)
 
     @staticmethod
     def disconnect_from_link(machine: Machine, link: Link) -> None:
@@ -586,8 +629,10 @@ class PodmanMachine(object):
         # Bridged connection required but not added in `deploy` method.
         if "_bridge_connected" not in machine.meta and machine.is_bridged():
             bridge_link = machine.lab.get_or_new_link(BRIDGE_LINK_NAME).api_object
-            # Plain Podman network: only the interface name, which Kathará stores in the `bridged_iface` label.
-            self.libpodCompat.network_connect(bridge_link, machine.api_object, f"eth{machine.meta['bridged_iface']}")
+            # Plain Podman network: only the interface name and alias, no MAC or plugin sysctls.
+            # The interface number is also kept in the `bridged_iface` label.
+            self.libpodCompat.network_connect(bridge_link, machine.api_object, f"eth{machine.meta['bridged_iface']}",
+                                              aliases=[build_iface_alias(machine.meta['bridged_iface'])])
 
         # Append executed machine startup commands inside the /var/log/startup.log file
         if machine.meta['exec_commands']:

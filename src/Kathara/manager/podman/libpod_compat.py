@@ -211,7 +211,8 @@ class LibpodCompat(object):
 
     def network_connect(self, network: Union[str, Network], container: Union[str, Container],
                         interface_name: str, mac_address: Optional[str] = None,
-                        sysctls: Optional[Dict[str, Any]] = None) -> None:
+                        sysctls: Optional[Dict[str, Any]] = None,
+                        aliases: Optional[List[str]] = None) -> None:
         """Connect a running container to a network, choosing interface name, MAC address and sysctls.
 
         Args:
@@ -220,6 +221,8 @@ class LibpodCompat(object):
             interface_name (str): The name of the interface inside the container (e.g. `eth1`).
             mac_address (Optional[str]): A static MAC address for the interface.
             sysctls (Optional[Dict[str, Any]]): Sysctls to apply to the interface, applied by the network plugin.
+            aliases (Optional[List[str]]): Network aliases for the attachment, returned back by inspect
+                in `NetworkSettings.Networks[<network>].Aliases`.
 
         Raises:
             APIError: If the Podman APIs return an error, including when the network plugin
@@ -234,6 +237,8 @@ class LibpodCompat(object):
         options = self.sysctl_options(sysctls)
         if options:
             body["options"] = options
+        if aliases:
+            body["aliases"] = aliases
 
         resp = self._api.post(
             f"/networks/{network_name}/connect",
