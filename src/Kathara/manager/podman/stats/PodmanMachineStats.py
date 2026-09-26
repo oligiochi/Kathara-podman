@@ -1,4 +1,4 @@
-import json
+import re
 from typing import Dict, Any, Generator, Optional
 
 from Kathara.manager.podman.libpod_compat import LibpodCompat
@@ -9,10 +9,11 @@ from ....decorators import privileged
 from ....foundation.manager.stats.IMachineStats import IMachineStats
 from ....utils import human_readable_bytes
 
-# Keep in sync with `PodmanMachine.IFACES_LABEL`. Duplicated as a literal (rather than imported)
-# to avoid a circular import between PodmanMachine and this module, same as DockerMachineStats
-# keeps its own 'kathara.iface'/'kathara.link' literals instead of importing them from DockerMachine.
-IFACES_LABEL = "kathara.ifaces"
+# Keep in sync with `PodmanMachine.IFACE_ALIAS_PREFIX`/`parse_iface_alias`. Duplicated as a literal
+# (rather than imported) to avoid a circular import between PodmanMachine and this module, same as
+# DockerMachineStats keeps its own 'kathara.iface'/'kathara.link' literals instead of importing
+# them from DockerMachine.
+IFACE_ALIAS_RE = re.compile(r"^kathara-eth(\d+)$")
 
 
 class PodmanMachineStats(IMachineStats):
@@ -75,12 +76,35 @@ class PodmanMachineStats(IMachineStats):
         self.status = LibpodCompat.container_status(self.machine_api_object)
         self.pids = updated_stats['pids_stats']['current'] if 'current' in updated_stats.get('pids_stats', {}) else 0
 
-        ifaces = json.loads(self.machine_api_object.labels.get(IFACES_LABEL) or "{}")
+        # Native libpod network-attachment data has no equivalent of Docker's endpoint DriverOpts: the
+        # interface number is read back from the `kathara-eth<N>` alias of each attachment instead
+        # (see PodmanMachine.get_container_ifaces), and the link name from the attached network's
+        # `name` label.
+        ifaces = {}
+        attached_networks = self.machine_api_object.attrs.get("NetworkSettings", {}).get("Networks", {}) or {}
+        for network_name, net_settings in attached_networks.items():
+            iface_num = None
+            for alias in net_settings.get("Aliases") or []:
+                match = IFACE_ALIAS_RE.match(alias)
+                if match:
+                    iface_num = int(match.group(1))
+                    break
+            if iface_num is None:
+                continue
+
+            try:
+                network = self.machine_api_object.podman_client.networks.get(network_name)
+            except NotFound:
+                continue
+            link_name = network.attrs.get("labels", {}).get("name")
+            if link_name:
+                ifaces[link_name] = iface_num
+
         if 'bridged_iface' in self.machine_api_object.labels:
-            ifaces["Bridged"] = {"num": int(self.machine_api_object.labels['bridged_iface'])}
+            ifaces["Bridged"] = int(self.machine_api_object.labels['bridged_iface'])
 
         if ifaces:
-            self.interfaces = ", ".join(sorted([f"{v['num']}:{link_name}" for link_name, v in ifaces.items()]))
+            self.interfaces = ", ".join(sorted([f"{num}:{link_name}" for link_name, num in ifaces.items()]))
         else:
             self.interfaces = "-"
 
