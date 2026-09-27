@@ -22,7 +22,7 @@ from .stats.PodmanMachineStats import PodmanMachineStats
 from ... import utils
 from ...decorators import privileged
 from ...exceptions import ContainerEngineConnectionError, LinkNotFoundError, MachineCollisionDomainError, \
-    InvocationError, LabNotFoundError, MachineNotRunningError
+    InvocationError, LabNotFoundError, MachineNotRunningError, NotSupportedError
 from ...exceptions import MachineNotFoundError
 from ...foundation.manager.IManager import IManager
 from ...model.Lab import Lab
@@ -33,18 +33,12 @@ from ...types import SharedCollisionDomainsOption
 from ...utils import pack_files_for_tar, check_required_single_not_none_var, check_single_not_none_var
 
 def default_podman_socket() -> str:
-    """Return the default Podman service socket URL.
-
-    Prefers the rootful system socket if reachable, otherwise falls back to the current user's
-    rootless socket under the XDG runtime directory.
+    """Return the default Podman service socket URL: the current user's rootless socket under the XDG runtime
+    directory. The rootful system socket is never used, since the Podman manager is rootless only.
 
     Returns:
         str: A `unix://` URL pointing to the Podman service socket.
     """
-    rootful_socket = "/run/podman/podman.sock"
-    if os.path.exists(rootful_socket):
-        return f"unix://{rootful_socket}"
-
     return f"unix://{os.path.join(get_runtime_dir(), 'podman', 'podman.sock')}"
 
 
@@ -68,6 +62,9 @@ def check_podman_status(method):
         except (RequestsConnectionError, PodmanError, APIError) as e:
             raise ContainerEngineConnectionError(str(e))
 
+        # Only once the service answers: installing the plugin restarts it.
+        PodmanPlugin().check_and_download_plugin()
+
     return check_podman
 
 
@@ -77,6 +74,11 @@ class PodmanManager(IManager):
 
     @check_podman_status
     def __init__(self) -> None:
+        # Checked first: as root, the user's socket, plugin directory and Podman configuration do not resolve,
+        # and nothing must be installed or created in root's home.
+        if utils.is_admin():
+            raise NotSupportedError("The Podman manager runs rootless: run Kathara as your normal user, without sudo.")
+
         base_url = Setting.get_instance().api_socket_url or default_podman_socket()
         try:
             self.client: PodmanClient = PodmanClient(base_url=base_url, timeout=None,
@@ -86,7 +88,6 @@ class PodmanManager(IManager):
         self.podman_image: PodmanImage = PodmanImage(self.client)
         self.podman_machine: PodmanMachine = PodmanMachine(self.client, self.podman_image)
         self.podman_link: PodmanLink = PodmanLink(self.client)
-        PodmanPlugin().check_and_download_plugin()
 
     @privileged
     def deploy_machine(self, machine: Machine) -> None:

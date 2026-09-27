@@ -12,6 +12,14 @@ from src.Kathara.exceptions import ContainerEngineConnectionError, NotSupportedE
 from src.Kathara.model.Lab import Lab
 
 
+@pytest.fixture(autouse=True)
+def rootless_user_and_no_plugin_install():
+    # Every test runs as a normal user and never touches the real plugin installation.
+    with mock.patch("src.Kathara.manager.podman.PodmanManager.utils.is_admin", return_value=False), \
+            mock.patch("src.Kathara.manager.podman.PodmanManager.PodmanPlugin") as mock_plugin:
+        yield mock_plugin
+
+
 def _setting_mock(**overrides):
     setting_mock = Mock()
     setting_mock.configure_mock(**{'api_socket_url': None, **overrides})
@@ -45,7 +53,8 @@ def test_init_raises_when_ping_returns_false(mock_podman_client_cls, mock_settin
 @mock.patch("src.Kathara.manager.podman.PodmanManager.PodmanImage")
 @mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
 @mock.patch("src.Kathara.manager.podman.PodmanManager.PodmanClient")
-def test_init_success(mock_podman_client_cls, mock_setting_get_instance, mock_image, mock_machine, mock_link):
+def test_init_success(mock_podman_client_cls, mock_setting_get_instance, mock_image, mock_machine, mock_link,
+                      rootless_user_and_no_plugin_install):
     mock_setting_get_instance.return_value = _setting_mock()
     client_instance = mock_podman_client_cls.return_value
     client_instance.ping.return_value = True
@@ -53,6 +62,7 @@ def test_init_success(mock_podman_client_cls, mock_setting_get_instance, mock_im
     manager = PodmanManager()
 
     assert manager.client == client_instance
+    rootless_user_and_no_plugin_install.return_value.check_and_download_plugin.assert_called_once()
 
 
 def test_get_formatted_manager_name():
@@ -150,10 +160,34 @@ def test_default_podman_socket_rootless(monkeypatch):
     assert default_podman_socket() == "unix:///run/user/1000/podman/podman.sock"
 
 
-def test_default_podman_socket_rootful(monkeypatch):
+def test_default_podman_socket_ignores_rootful_socket(monkeypatch):
     monkeypatch.setattr("os.path.exists", lambda path: path == "/run/podman/podman.sock")
+    monkeypatch.setattr("src.Kathara.manager.podman.PodmanManager.get_runtime_dir", lambda: "/run/user/1000")
 
-    assert default_podman_socket() == "unix:///run/podman/podman.sock"
+    assert default_podman_socket() == "unix:///run/user/1000/podman/podman.sock"
+
+
+@mock.patch("src.Kathara.manager.podman.PodmanManager.PodmanClient")
+def test_init_rejects_root(mock_podman_client_cls, rootless_user_and_no_plugin_install):
+    with mock.patch("src.Kathara.manager.podman.PodmanManager.utils.is_admin", return_value=True):
+        with pytest.raises(NotSupportedError, match="without sudo"):
+            PodmanManager()
+
+    mock_podman_client_cls.assert_not_called()
+    rootless_user_and_no_plugin_install.assert_not_called()
+
+
+@mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
+@mock.patch("src.Kathara.manager.podman.PodmanManager.PodmanClient")
+def test_init_ping_failure_does_not_install_plugin(mock_podman_client_cls, mock_setting_get_instance,
+                                                    rootless_user_and_no_plugin_install):
+    mock_setting_get_instance.return_value = _setting_mock()
+    mock_podman_client_cls.return_value.ping.return_value = False
+
+    with pytest.raises(ContainerEngineConnectionError):
+        PodmanManager()
+
+    rootless_user_and_no_plugin_install.return_value.check_and_download_plugin.assert_not_called()
 
 
 @mock.patch("src.Kathara.manager.podman.PodmanManager.PodmanLink")
