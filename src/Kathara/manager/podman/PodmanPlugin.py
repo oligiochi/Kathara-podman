@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 import tarfile
 import tempfile
 from typing import Optional
@@ -12,10 +13,10 @@ from ...exceptions import PodmanPluginError
 from ...setting.Setting import Setting
 import requests
 
-PLUGIN_NAME = "katharanp_vde"                  # = nome del driver = nome dell'eseguibile
-PLUGIN_VERSION = "v0.1.2"                      # la versione che questo Kathará si aspetta
+PLUGIN_NAME = "katharanp_vde"                  # = nome del driver = nome dell'eseguibile                    
 RELEASE_URL = ("https://github.com/oligiochi/katharanp-netavark/releases/download/" "{version}/katharanp-netavark-{version}-linux-{arch}.tar.gz")
-SUPPORTED_ARCHITECTURES = {"amd64"}     # aggiungere "arm64" quando la release lo include
+PLUGIN_VERSION = "v0.1.3"                       # la versione che questo Kathará si aspetta
+SUPPORTED_ARCHITECTURES = {"amd64", "arm64"}    # aggiungere "arm64" quando la release lo include
 
 class PodmanPlugin(object):
     """Class responsible for interacting with Podman Plugins."""
@@ -35,6 +36,13 @@ class PodmanPlugin(object):
             PodmanPluginError: If Podman is reached through a remote connection, or if the plugin
                 cannot be installed or the Podman service cannot be restarted.
         """
+        
+        if sys.platform != "linux":
+            raise PodmanPluginError(
+                "The Podman backend is only supported on Linux hosts: on macOS and Windows Podman runs "
+                "containers in a `podman machine` VM, where the Kathara network plugin cannot be installed yet."
+            )
+        
         socket_url = Setting.get_instance().api_socket_url
         if socket_url and not socket_url.startswith("unix://"):
             raise PodmanPluginError(

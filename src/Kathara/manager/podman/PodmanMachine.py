@@ -15,6 +15,7 @@ import podman.domain.networks
 from podman import PodmanClient
 from podman.errors import APIError
 
+from .interfaces import IFACE_ALIAS_PREFIX, build_iface_alias, parse_iface_alias  # noqa: F401
 from .libpod_compat import LibpodCompat
 from .PodmanImage import PodmanImage
 from .exec_stream.PodmanExecStream import PodmanExecStream
@@ -24,7 +25,7 @@ from ... import utils
 from ...decorators import privileged
 from ...event.EventDispatcher import EventDispatcher
 from ...exceptions import MachineAlreadyExistsError, MachineBinaryError, MachineNotRunningError, \
-    InvocationError, MountDeniedError
+    InvocationError, MachineOptionError, MountDeniedError
 from ...model.Interface import Interface
 from ...model.Lab import Lab
 from ...model.Link import Link, BRIDGE_LINK_NAME
@@ -41,39 +42,6 @@ OCI_RUNTIME_RE = re.compile(
 
 # Per-interface sysctls (`net.ipv{4,6}.{conf,neigh}.ethN.*`): group 2 is the interface name.
 IFACE_SYSCTL_RE = re.compile(r"net\.ipv[46]\.(conf|neigh)\.(eth\d+)\.")
-
-# Network alias used to persist the number of a Kathará interface. Labels cannot be updated on a
-# running container, but a network alias can be set both at container creation and at `connect()`
-# time, and is returned by inspect in `NetworkSettings.Networks[<network>].Aliases`:
-# `get_lab_from_api`/`update_lab_from_api` read it back from there instead of a label.
-IFACE_ALIAS_PREFIX = "kathara-eth"
-IFACE_ALIAS_RE = re.compile(rf"^{re.escape(IFACE_ALIAS_PREFIX)}(\d+)$")
-
-
-def build_iface_alias(interface_num: int) -> str:
-    """Return the network alias used to persist the number of a Kathará interface.
-
-    Args:
-        interface_num (int): The number of the interface (e.g. `1` for `eth1`).
-
-    Returns:
-        str: The alias, e.g. `kathara-eth1`.
-    """
-    return f"{IFACE_ALIAS_PREFIX}{interface_num}"
-
-
-def parse_iface_alias(alias: str) -> Optional[int]:
-    """Parse the interface number out of a `kathara-eth<N>` network alias.
-
-    Args:
-        alias (str): A network alias.
-
-    Returns:
-        Optional[int]: The interface number, or None if `alias` is not a Kathará interface alias.
-    """
-    match = IFACE_ALIAS_RE.match(alias)
-    return int(match.group(1)) if match else None
-
 
 def get_container_ifaces(container: podman.domain.containers.Container,
                          networks_by_name: Dict[str, podman.domain.networks.Network]) -> Dict[str, Dict[str, Any]]:
@@ -616,7 +584,13 @@ class PodmanMachine(object):
         try:
             machine.api_object.start()
         except APIError as e:
-            raise e
+            # Never started, so netavark never ran the plugin for it: removing the container
+            # leaves no network state behind.
+            try:
+                machine.api_object.remove(force=True)
+            except APIError as remove_error:
+                logging.debug(f"Cannot remove device `{machine.name}` after a failed start: {remove_error}")
+            raise self._translate_start_error(machine, e) from e
 
         # Connect the container to its networks (starting from the second, the first is already connected in `create`)
         for (iface_num, machine_iface) in islice(machine.interfaces.items(), 1, None):
@@ -1207,3 +1181,25 @@ class PodmanMachine(object):
                                 )
 
         container.remove(v=True, force=True)
+    
+    @staticmethod 
+    def _translate_start_error(machine: Machine, error: APIError) -> Exception:
+        """Turn the libpod errors caused by rootless limits into readable Kathará errors."""
+        explanation = error.explanation or str(error)
+
+        # crun: "setrlimit `RLIMIT_NOFILE`: Operation not permitted"
+        match = re.search(r"setrlimit `RLIMIT_(\w+)`", explanation)
+        if match:
+            name = match.group(1).lower()
+            limit = machine.get_ulimits().get(name, {})
+            return MachineOptionError(
+                f"Cannot apply ulimit `{name}` (soft={limit.get('soft')}, hard={limit.get('hard')}) on device "
+                f"`{machine.name}`: in rootless mode a limit cannot exceed the hard limit of the user running Podman "
+                f"(check it with `ulimit -H`)."
+            )
+
+        # rootlessport: "rootlessport cannot expose privileged port 80, you can add ... (>= 1024): listen tcp ..."
+        if "rootlessport cannot expose privileged port" in explanation:
+            return MachineOptionError(f"Cannot publish a port of device `{machine.name}`: {explanation}")
+
+        return error
