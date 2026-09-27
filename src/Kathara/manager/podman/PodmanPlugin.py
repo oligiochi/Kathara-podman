@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 import tarfile
 import tempfile
 from typing import Optional
@@ -35,6 +36,13 @@ class PodmanPlugin(object):
             PodmanPluginError: If Podman is reached through a remote connection, or if the plugin
                 cannot be installed or the Podman service cannot be restarted.
         """
+        
+        if sys.platform != "linux":
+            raise PodmanPluginError(
+                "The Podman backend is only supported on Linux hosts: on macOS and Windows Podman runs "
+                "containers in a `podman machine` VM, where the Kathara network plugin cannot be installed yet."
+            )
+        
         socket_url = Setting.get_instance().api_socket_url
         if socket_url and not socket_url.startswith("unix://"):
             raise PodmanPluginError(
