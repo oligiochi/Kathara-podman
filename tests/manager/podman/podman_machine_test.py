@@ -11,7 +11,9 @@ from src.Kathara.manager.podman.PodmanMachine import PodmanMachine, CPU_PERIOD, 
 from src.Kathara.model.Lab import Lab
 from src.Kathara.model.Link import Link
 from src.Kathara.model.Machine import Machine
-from src.Kathara.exceptions import NotSupportedError
+from podman.errors import APIError
+
+from src.Kathara.exceptions import MachineOptionError, NotSupportedError
 from src.Kathara.types import SharedCollisionDomainsOption
 
 
@@ -419,3 +421,64 @@ def test_get_container_ifaces_skips_network_without_name_label():
     unlabeled_network.attrs = {"labels": {}}
 
     assert get_container_ifaces(container, {"podman_link_a": unlabeled_network}) == {}
+
+
+#
+# TEST: start errors caused by rootless limits
+#
+# Messages returned by libpod on Podman 5.8.7 (spike P18).
+SETRLIMIT_EXPLANATION = "crun: setrlimit `RLIMIT_NOFILE`: Operation not permitted: OCI permission denied"
+ROOTLESSPORT_EXPLANATION = (
+    "rootlessport cannot expose privileged port 80, you can add 'net.ipv4.ip_unprivileged_port_start=80' to "
+    "/etc/sysctl.conf (currently 1024), or choose a larger port number (>= 1024): "
+    "listen tcp 0.0.0.0:80: bind: permission denied"
+)
+
+
+def test_translate_start_error_setrlimit(default_device):
+    default_device.add_meta("ulimit", "nofile=1024:524289")
+    error = APIError("500 Server Error", explanation=SETRLIMIT_EXPLANATION)
+
+    result = PodmanMachine._translate_start_error(default_device, error)
+
+    assert isinstance(result, MachineOptionError)
+    assert "`nofile`" in str(result)
+    assert "soft=1024, hard=524289" in str(result)
+    assert "`test_device`" in str(result)
+
+
+def test_translate_start_error_privileged_port(default_device):
+    error = APIError("500 Server Error", explanation=ROOTLESSPORT_EXPLANATION)
+
+    result = PodmanMachine._translate_start_error(default_device, error)
+
+    assert isinstance(result, MachineOptionError)
+    assert "`test_device`" in str(result)
+    assert "ip_unprivileged_port_start" in str(result)
+
+
+def test_translate_start_error_other_errors_unchanged(default_device):
+    error = APIError("500 Server Error", explanation="some other libpod failure")
+
+    assert PodmanMachine._translate_start_error(default_device, error) is error
+
+
+def test_start_failure_removes_device_and_raises_translated_error(podman_machine, default_device):
+    default_device.add_meta("ulimit", "nofile=1024:524289")
+    default_device.api_object.start.side_effect = APIError("500 Server Error", explanation=SETRLIMIT_EXPLANATION)
+
+    with pytest.raises(MachineOptionError) as excinfo:
+        podman_machine.start(default_device)
+
+    default_device.api_object.remove.assert_called_once_with(force=True)
+    assert isinstance(excinfo.value.__cause__, APIError)
+
+
+def test_start_failure_remove_error_keeps_original_error(podman_machine, default_device):
+    default_device.api_object.start.side_effect = APIError("500 Server Error", explanation="some other libpod failure")
+    default_device.api_object.remove.side_effect = APIError("remove failed")
+
+    with pytest.raises(APIError) as excinfo:
+        podman_machine.start(default_device)
+
+    assert excinfo.value.explanation == "some other libpod failure"
