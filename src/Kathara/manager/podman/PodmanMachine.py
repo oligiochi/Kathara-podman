@@ -584,6 +584,12 @@ class PodmanMachine(object):
         try:
             machine.api_object.start()
         except APIError as e:
+            # Never started, so netavark never ran the plugin for it: removing the container
+            # leaves no network state behind.
+            try:
+                machine.api_object.remove(force=True)
+            except APIError as remove_error:
+                logging.debug(f"Cannot remove device `{machine.name}` after a failed start: {remove_error}")
             raise self._translate_start_error(machine, e) from e
 
         # Connect the container to its networks (starting from the second, the first is already connected in `create`)
