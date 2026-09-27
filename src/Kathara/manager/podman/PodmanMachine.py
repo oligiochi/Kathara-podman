@@ -25,7 +25,7 @@ from ... import utils
 from ...decorators import privileged
 from ...event.EventDispatcher import EventDispatcher
 from ...exceptions import MachineAlreadyExistsError, MachineBinaryError, MachineNotRunningError, \
-    InvocationError, MountDeniedError
+    InvocationError, MachineOptionError, MountDeniedError
 from ...model.Interface import Interface
 from ...model.Lab import Lab
 from ...model.Link import Link, BRIDGE_LINK_NAME
@@ -584,7 +584,7 @@ class PodmanMachine(object):
         try:
             machine.api_object.start()
         except APIError as e:
-            raise e
+            raise self._translate_start_error(machine, e) from e
 
         # Connect the container to its networks (starting from the second, the first is already connected in `create`)
         for (iface_num, machine_iface) in islice(machine.interfaces.items(), 1, None):
@@ -1175,3 +1175,25 @@ class PodmanMachine(object):
                                 )
 
         container.remove(v=True, force=True)
+    
+    @staticmethod 
+    def _translate_start_error(machine: Machine, error: APIError) -> Exception:
+        """Turn the libpod errors caused by rootless limits into readable Kathará errors."""
+        explanation = error.explanation or str(error)
+
+        # crun: "setrlimit `RLIMIT_NOFILE`: Operation not permitted"
+        match = re.search(r"setrlimit `RLIMIT_(\w+)`", explanation)
+        if match:
+            name = match.group(1).lower()
+            limit = machine.get_ulimits().get(name, {})
+            return MachineOptionError(
+                f"Cannot apply ulimit `{name}` (soft={limit.get('soft')}, hard={limit.get('hard')}) on device "
+                f"`{machine.name}`: in rootless mode a limit cannot exceed the hard limit of the user running Podman "
+                f"(check it with `ulimit -H`)."
+            )
+
+        # rootlessport: "rootlessport cannot expose privileged port 80, you can add ... (>= 1024): listen tcp ..."
+        if "rootlessport cannot expose privileged port" in explanation:
+            return MachineOptionError(f"Cannot publish a port of device `{machine.name}`: {explanation}")
+
+        return error
