@@ -138,7 +138,7 @@ class PodmanLink(object):
             # The L2 topology is owned by the Kathará network plugin (a netavark plugin): it creates the bridge
             # and the veths, and applies interface names, MAC addresses and per-interface sysctls.
             # Podman only forwards the configuration, so IPAM and DNS are disabled: Kathará assigns
-            # addresses itself (see SPIKE-REPORT.md S6) and machines do not need aardvark-dns.
+            # addresses itself and machines do not need aardvark-dns.
             link.api_object = self.client.networks.create(
                 name=link_name,
                 driver=NETWORK_PLUGIN_DRIVER,

@@ -252,8 +252,7 @@ class LibpodCompat(object):
         """Query the registry for the manifest of a tagged image reference, without pulling it.
 
         The compat `/distribution/{name}/json` endpoint and podman-py's `get_registry_data` never
-        leave local storage; only this libpod endpoint actually reaches the registry (see
-        MATRICE-PARITA-ROOTLESS.md, P22).
+        leave local storage; only this libpod endpoint actually reaches the registry.
 
         Args:
             name (str): The fully qualified image reference to inspect

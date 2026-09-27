@@ -54,8 +54,7 @@ class PodmanImage(object):
         `ImagesManager.get_registry_data` and the compat `/distribution/{name}/json` endpoint are
         local-only in podman-py (they just re-wrap the already pulled local image, never querying
         the registry). The libpod manifest endpoint does query the registry without pulling, so it
-        is used instead through `LibpodCompat.inspect_remote_manifest`. See
-        MATRICE-PARITA-ROOTLESS.md, P22.
+        is used instead through `LibpodCompat.inspect_remote_manifest`.
 
         Args:
             image_name (str): The name of a Podman Image.

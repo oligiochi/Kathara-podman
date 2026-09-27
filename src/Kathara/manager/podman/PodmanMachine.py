@@ -93,7 +93,7 @@ def get_container_ifaces(container: podman.domain.containers.Container,
 # Kathará images declare `VOLUME /hosthome` and `VOLUME /shared`. Rootless Podman creates
 # anonymous, uninitialized named volumes for any declared VOLUME that isn't otherwise mounted,
 # and the container fails to start. A tmpfs mount on both paths keeps them harmless when the
-# corresponding Kathará setting is disabled. See SPIKE-REPORT.md (anonymous volumes finding).
+# corresponding Kathará setting is disabled.
 ANONYMOUS_VOLUME_PATHS = ["/hosthome", "/shared"]
 
 # Known commands that each container should execute
@@ -315,7 +315,7 @@ class PodmanMachine(object):
 
         # Get the first network object, if defined.
         # Podman containers must be created already attached to their first network: unlike Docker,
-        # `network_mode="none"` followed by a `connect()` does not work reliably (see SPIKE-REPORT.md S7).
+        # `network_mode="none"` followed by a `connect()` does not work reliably.
         first_network = None
         first_machine_iface = None
         if machine.interfaces:
@@ -462,7 +462,10 @@ class PodmanMachine(object):
             else:
                 create_kwargs["network_mode"] = "none"
             
-            if disable_selinux_label:                                                    # NUOVO
+            # Only disable SELinux label separation when a mount cannot be relabeled (the user home for
+            # `/hosthome`, or an arbitrary user volume): `/shared` is a Kathará-owned folder and keeps its
+            # normal confinement via the `z` relabel on its own mount above.
+            if disable_selinux_label:
                 create_kwargs["security_opt"] = ["disable"]
 
             machine_container = self.client.containers.create(**create_kwargs)

@@ -58,8 +58,8 @@ def test_create_new_network(mock_get_current_user_name, mock_setting_get_instanc
     assert kwargs['labels']['app'] == 'kathara'
     assert kwargs['labels']['user'] == 'test-user'
     assert kwargs['labels']['lab_hash'] == default_lab.hash
-    # host-local IPAM is cosmetic for Kathara (interface IPs are always assigned manually, see
-    # SPIKE-REPORT.md S6): opt out of it natively instead of leaving Podman's default active.
+    # host-local IPAM is cosmetic for Kathara (interface IPs are always assigned manually):
+    # opt out of it natively instead of leaving Podman's default active.
     assert kwargs['ipam']['Driver'] == 'none'
 
     assert link.api_object == podman_link.client.networks.create.return_value
