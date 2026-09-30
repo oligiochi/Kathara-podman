@@ -119,6 +119,15 @@ Each Manager specifies additional parameters which are used only when the Manage
 
     Default to null.
 
+### KATHARA (Podman)
+
+* `network_plugin` (string):
+	This parameter specifies the Podman Network Plugin used to create collision domains. Currently, Kathara supports two plugins: `katharanp_vde` is the default plugin, based on VDE software switches, a userspace switch that forwards every frame. `katharanp` is based on Linux bridges, with the data plane in the kernel; LACP frames cannot cross a Linux bridge.
+
+	Possible values are `katharanp`, `katharanp_vde`.
+
+	Default to `katharanp_vde`.
+
 ### MEGALOS (Kubernetes)
 
 * `api_server_url` (string):
