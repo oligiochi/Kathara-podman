@@ -48,13 +48,19 @@ def test_create_new_network(mock_get_current_user_name, mock_setting_get_instanc
     podman_link.create(link)
 
     _, kwargs = podman_link.client.networks.create.call_args
+    # The L2 topology (bridge, veths, interface names, MACs, per-interface sysctls) is owned by the
+    # Kathará netavark plugin, not by Podman itself.
     assert kwargs['driver'] == 'katharanp_vde'
+    # Podman only forwards the configuration: IPAM and DNS are disabled since Kathará assigns
+    # addresses itself and machines do not need aardvark-dns.
+    assert kwargs['dns_enabled'] is False
+    assert 'internal' not in kwargs
     assert kwargs['labels']['name'] == 'A'
     assert kwargs['labels']['app'] == 'kathara'
     assert kwargs['labels']['user'] == 'test-user'
     assert kwargs['labels']['lab_hash'] == default_lab.hash
-    # host-local IPAM is cosmetic for Kathara (interface IPs are always assigned manually, see
-    # SPIKE-REPORT.md S6): opt out of it natively instead of leaving Podman's default active.
+    # host-local IPAM is cosmetic for Kathara (interface IPs are always assigned manually):
+    # opt out of it natively instead of leaving Podman's default active.
     assert kwargs['ipam']['Driver'] == 'none'
 
     assert link.api_object == podman_link.client.networks.create.return_value
@@ -92,19 +98,31 @@ def test_create_idempotent(mock_get_current_user_name, mock_setting_get_instance
     assert not podman_link.client.networks.create.called
 
 
-@mock.patch("src.Kathara.manager.podman.PodmanLink.PodmanLink.get_links_api_objects_by_filters")
+@mock.patch("src.Kathara.manager.podman.PodmanLink.PodmanLink._deploy_link")
 @mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
-@mock.patch("src.Kathara.utils.get_current_user_name")
-def test_create_external_not_supported(mock_get_current_user_name, mock_setting_get_instance, mock_get_links,
-                                       podman_link, default_lab):
-    mock_get_links.return_value = []
-    mock_get_current_user_name.return_value = "test-user"
+def test_deploy_links_external_not_supported(mock_setting_get_instance, mock_deploy_link, podman_link, default_lab):
     mock_setting_get_instance.return_value = _setting_mock()
 
     link = default_lab.get_or_new_link("A")
     link.external.append(ExternalLink("eth0"))
 
-    with pytest.raises(NotSupportedError):
-        podman_link.create(link)
+    with pytest.raises(NotSupportedError, match="External collision domains"):
+        podman_link.deploy_links(default_lab)
 
+    assert not mock_deploy_link.called
+    assert not podman_link.client.networks.create.called
+
+
+@mock.patch("src.Kathara.manager.podman.PodmanLink.PodmanLink._deploy_link")
+@mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
+def test_deploy_links_shared_between_users_not_supported(mock_setting_get_instance, mock_deploy_link, podman_link,
+                                                          default_lab):
+    mock_setting_get_instance.return_value = _setting_mock(shared_cds=SharedCollisionDomainsOption.USERS)
+
+    default_lab.get_or_new_link("A")
+
+    with pytest.raises(NotSupportedError, match="Collision domains shared between users"):
+        podman_link.deploy_links(default_lab)
+
+    assert not mock_deploy_link.called
     assert not podman_link.client.networks.create.called

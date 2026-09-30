@@ -25,8 +25,9 @@ class PodmanSettingsAddon(SettingsAddon):
         self.shared_mount: bool = True
         self.image_update_policy: str = 'Prompt'
         self.shared_cds: int = SharedCollisionDomainsOption.NOT_SHARED
-        # URL of the Podman service socket (e.g. unix:///run/podman/podman.sock or a `podman machine`/SSH URL).
-        # If None, PodmanManager resolves the default rootful/rootless local socket.
+        # URL of the local Podman service socket (e.g. unix:///run/user/1000/podman/podman.sock).
+        # Only local `unix://` sockets are supported (remote connections cannot install the network plugin).
+        # If None, PodmanManager resolves the default rootless user socket.
         self.api_socket_url: Optional[str] = None
         # Name of the netavark plugin (driver) used to create the collision domains.
         self.network_plugin: str = "katharanp_vde"

@@ -5,6 +5,7 @@ import podman.domain.images
 from podman import PodmanClient
 from podman.errors import APIError, ImageNotFound
 
+from .libpod_compat import LibpodCompat
 from ... import utils
 from ...event.EventDispatcher import EventDispatcher
 from ...exceptions import InvalidImageArchitectureError, DockerImageNotFoundError
@@ -12,10 +13,11 @@ from ...exceptions import InvalidImageArchitectureError, DockerImageNotFoundErro
 
 class PodmanImage(object):
     """Class responsible for interacting with Podman Images."""
-    __slots__ = ['client']
+    __slots__ = ['client', 'libpodCompat']
 
     def __init__(self, client: PodmanClient) -> None:
         self.client: PodmanClient = client
+        self.libpodCompat: LibpodCompat = LibpodCompat(self.client)
 
     def get_local(self, image_name: str) -> podman.domain.images.Image:
         """Return the specified Podman Image.
@@ -49,10 +51,10 @@ class PodmanImage(object):
     def check_for_updates(self, image_name: str) -> None:
         """Check if a newer version of the specified image is available.
 
-        Not supported: `ImagesManager.get_registry_data` is a local-only shim in podman-py
-        (it just re-wraps the already pulled local image, it does not query the registry),
-        so there is no way to compare local and remote digests without pulling. See
-        SPIKE-REPORT.md S8.
+        `ImagesManager.get_registry_data` and the compat `/distribution/{name}/json` endpoint are
+        local-only in podman-py (they just re-wrap the already pulled local image, never querying
+        the registry). The libpod manifest endpoint does query the registry without pulling, so it
+        is used instead through `LibpodCompat.inspect_remote_manifest`.
 
         Args:
             image_name (str): The name of a Podman Image.
@@ -60,9 +62,51 @@ class PodmanImage(object):
         Returns:
             None
         """
-        logging.debug(
-            f"Cannot check updates for `{image_name}`: Podman does not expose a registry inspection endpoint."
+        logging.debug(f"Checking updates for {image_name}...")
+
+        if '@' in image_name:
+            logging.debug(f"No need to check image digest of {image_name}.")
+            return
+
+        normalized_name = self._normalize_image_name(image_name)
+        registry, _, _ = normalized_name.partition("/")
+        if registry == "localhost":
+            logging.debug(f"Image {image_name} is built locally, skipping update check.")
+            return
+
+        local_image_info = self.get_local(image_name)
+        local_repo_digests = local_image_info.attrs.get("RepoDigests")
+        if not local_repo_digests:
+            logging.debug(f"Image {image_name} has no RepoDigests, skipping update check.")
+            return
+
+        try:
+            manifest = self.libpodCompat.inspect_remote_manifest(normalized_name)
+        except APIError as e:
+            logging.debug(f"Cannot check updates for {image_name}: {e}")
+            return
+
+        platform_manifests = manifest.get("manifests")
+        if not platform_manifests:
+            logging.debug(f"Manifest of {image_name} has no per-platform entries, skipping update check.")
+            return
+
+        host_arch = utils.get_architecture()
+        platform_manifest = next(
+            (m for m in platform_manifests
+             if m.get("platform", {}).get("os") == "linux" and m.get("platform", {}).get("architecture") == host_arch),
+            None
         )
+        if platform_manifest is None:
+            logging.debug(f"No manifest entry for linux/{host_arch} in {image_name}, skipping update check.")
+            return
+
+        remote_digest = platform_manifest["digest"]
+        local_digests = {d.split("@", 1)[1] for d in local_repo_digests if "@" in d}
+        if remote_digest not in local_digests:
+            EventDispatcher.get_instance().dispatch("docker_image_update_found",
+                                                    docker_image=self,
+                                                    image_name=image_name)
 
     def check(self, image_name: str) -> None:
         """Check the existence of the specified image.
@@ -116,8 +160,7 @@ class PodmanImage(object):
         except InvalidImageArchitectureError as e:
             raise e
         except (ImageNotFound, APIError):
-            # Not found locally: the only way to verify it exists remotely is to actually pull it,
-            # since podman-py has no registry-inspection endpoint (see check_for_updates above).
+            # Not found locally: pull it, which also verifies that it exists on the registry.
             if not pull:
                 raise DockerImageNotFoundError(image_name)
 

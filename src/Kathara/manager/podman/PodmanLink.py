@@ -7,10 +7,11 @@ from podman import PodmanClient
 from podman.domain.ipam import IPAMConfig
 from podman.errors import NotFound
 
+from .rootless import not_supported_in_rootless
 from .stats.PodmanLinkStats import PodmanLinkStats
 from ... import utils
 from ...event.EventDispatcher import EventDispatcher
-from ...exceptions import PrivilegeError, InvocationError, NotSupportedError
+from ...exceptions import PrivilegeError, InvocationError
 from ...model.Lab import Lab
 from ...model.Link import BRIDGE_LINK_NAME, Link
 from ...setting.Setting import Setting
@@ -19,7 +20,6 @@ from ...types import SharedCollisionDomainsOption
 # The default bridge network Podman creates for containers not attached to a user-defined network.
 # Used for Kathará's "bridged" device option, mirroring DockerLink.get_docker_bridge().
 DEFAULT_BRIDGE_NETWORK_NAME = "podman"
-
 
 class PodmanLink(object):
     """The class responsible for deploying Kathara collision domains as Podman networks and interact with them."""
@@ -41,6 +41,8 @@ class PodmanLink(object):
 
         Raises:
             InvocationError: If both `selected_links` and `excluded_links` are specified.
+            NotSupportedError: If any of the links to deploy is attached to external interfaces, or if
+                collision domains are configured to be shared between users.
         """
         if selected_links and excluded_links:
             raise InvocationError(f"You can either specify `selected_links` or `excluded_links`.")
@@ -54,6 +56,13 @@ class PodmanLink(object):
             links = {
                 k: v for k, v in links if k not in excluded_links
             }.items()
+
+        # Check every link before creating anything, so that a lab never ends up half deployed.
+        if any(link.external for (_, link) in links):
+            not_supported_in_rootless("External collision domains")
+
+        if Setting.get_instance().shared_cds == SharedCollisionDomainsOption.USERS:
+            not_supported_in_rootless("Collision domains shared between users")
 
         if len(links) > 0:
             pool_size = utils.get_pool_size()
@@ -99,9 +108,6 @@ class PodmanLink(object):
 
         Returns:
             None
-
-        Raises:
-            NotSupportedError: If the link is attached to external interfaces.
         """
         # Reserved name for bridged connections, ignore.
         if link.name == BRIDGE_LINK_NAME:
@@ -121,9 +127,6 @@ class PodmanLink(object):
         if networks:
             link.api_object = networks.pop()
         else:
-            if link.external:
-                raise NotSupportedError("External collision domains are not supported on the Podman backend yet.")
-
             link_name = self.get_network_name(link)
             additional_labels = {}
             if Setting.get_instance().shared_cds != SharedCollisionDomainsOption.USERS:
@@ -131,11 +134,10 @@ class PodmanLink(object):
             if Setting.get_instance().shared_cds == SharedCollisionDomainsOption.NOT_SHARED:
                 additional_labels["lab_hash"] = link.lab.hash
 
-            # The L2 topology is owned by the Kathará network plugin (a netavark plugin,
-            # selected by the `network_plugin` setting): it creates the bridge
+            # The L2 topology is owned by the Kathará network plugin (a netavark plugin): it creates the bridge
             # and the veths, and applies interface names, MAC addresses and per-interface sysctls.
             # Podman only forwards the configuration, so IPAM and DNS are disabled: Kathará assigns
-            # addresses itself (see SPIKE-REPORT.md S6) and machines do not need aardvark-dns.
+            # addresses itself and machines do not need aardvark-dns.
             link.api_object = self.client.networks.create(
                 name=link_name,
                 driver=Setting.get_instance().network_plugin,
