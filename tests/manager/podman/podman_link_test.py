@@ -29,6 +29,7 @@ def _setting_mock(**overrides):
     setting_mock.configure_mock(**{
         'shared_cds': SharedCollisionDomainsOption.NOT_SHARED,
         'net_prefix': 'net_prefix',
+        'network_plugin': 'katharanp_vde',
         **overrides
     })
     return setting_mock
@@ -47,8 +48,7 @@ def test_create_new_network(mock_get_current_user_name, mock_setting_get_instanc
     podman_link.create(link)
 
     _, kwargs = podman_link.client.networks.create.call_args
-    assert kwargs['driver'] == 'bridge'
-    assert kwargs['internal'] is True
+    assert kwargs['driver'] == 'katharanp_vde'
     assert kwargs['labels']['name'] == 'A'
     assert kwargs['labels']['app'] == 'kathara'
     assert kwargs['labels']['user'] == 'test-user'
@@ -58,6 +58,21 @@ def test_create_new_network(mock_get_current_user_name, mock_setting_get_instanc
     assert kwargs['ipam']['Driver'] == 'none'
 
     assert link.api_object == podman_link.client.networks.create.return_value
+
+
+@mock.patch("src.Kathara.manager.podman.PodmanLink.PodmanLink.get_links_api_objects_by_filters")
+@mock.patch("src.Kathara.setting.Setting.Setting.get_instance")
+@mock.patch("src.Kathara.utils.get_current_user_name")
+def test_create_new_network_linux_bridge_plugin(mock_get_current_user_name, mock_setting_get_instance,
+                                                mock_get_links, podman_link, default_lab):
+    mock_get_links.return_value = []
+    mock_get_current_user_name.return_value = "test-user"
+    mock_setting_get_instance.return_value = _setting_mock(network_plugin='katharanp')
+
+    podman_link.create(default_lab.get_or_new_link("A"))
+
+    _, kwargs = podman_link.client.networks.create.call_args
+    assert kwargs['driver'] == 'katharanp'
 
 
 @mock.patch("src.Kathara.manager.podman.PodmanLink.PodmanLink.get_links_api_objects_by_filters")
