@@ -15,7 +15,7 @@ import requests
 
 PLUGIN_NAME = "katharanp_vde"                  # = driver name = executable name
 RELEASE_URL = ("https://github.com/oligiochi/katharanp-netavark/releases/download/" "{version}/katharanp-netavark-{version}-linux-{arch}.tar.gz")
-PLUGIN_VERSION = "v0.1.3"                       # plugin release this Kathará version expects
+PLUGIN_VERSION = "v0.1.4"                       # plugin release this Kathará version expects
 SUPPORTED_ARCHITECTURES = {"amd64", "arm64"}    # architectures with a published plugin bundle
 
 class PodmanPlugin(object):
