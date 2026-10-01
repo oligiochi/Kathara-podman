@@ -426,7 +426,7 @@ def test_get_container_ifaces_skips_network_without_name_label():
 #
 # TEST: start errors caused by rootless limits
 #
-# Messages returned by libpod on Podman 5.8.7 (spike P18).
+# Messages returned by libpod on Podman 5.8.7.
 SETRLIMIT_EXPLANATION = "crun: setrlimit `RLIMIT_NOFILE`: Operation not permitted: OCI permission denied"
 ROOTLESSPORT_EXPLANATION = (
     "rootlessport cannot expose privileged port 80, you can add 'net.ipv4.ip_unprivileged_port_start=80' to "

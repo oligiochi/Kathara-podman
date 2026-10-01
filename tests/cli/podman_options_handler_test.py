@@ -23,7 +23,7 @@ def _build_menu():
     with mock.patch("Kathara.setting.Setting.Setting.get_instance") as mock_get_instance:
         mock_get_instance.return_value = Mock(hosthome_mount=False, shared_mount=True,
                                               image_update_policy='Prompt', shared_cds=1,
-                                              api_socket_url=None)
+                                              api_socket_url=None, network_plugin='katharanp_vde')
         handler.add_items(menu, MenuFormatBuilder())
     return menu
 
@@ -42,12 +42,23 @@ def test_add_items_appends_expected_items():
 
     titles = [item.get_text() for item in menu.items]
     assert titles == [
+        "Choose Podman Network Plugin",
         "Automatically mount /hosthome on startup",
         "Automatically mount /shared on startup",
         "Podman Image Update Policy",
         "Enable Shared Collision Domains",
         "Configure a custom local Podman socket",
     ]
+
+
+def test_network_plugin_submenu_choices():
+    menu = _build_menu()
+
+    network_plugin_item = _item_by_text(menu, "Choose Podman Network Plugin")
+    choices = network_plugin_item.get_submenu().items
+
+    assert [item.get_text() for item in choices] == ["katharanp_vde", "katharanp"]
+    assert [item.args for item in choices] == [["network_plugin", "katharanp_vde"], ["network_plugin", "katharanp"]]
 
 
 def test_shared_cds_submenu_has_only_two_choices():
