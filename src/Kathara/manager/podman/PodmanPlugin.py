@@ -13,11 +13,10 @@ from ...exceptions import PodmanPluginError
 from ...setting.Setting import Setting
 import requests
 
-PLUGIN_NAME = "katharanp_vde"                  # = driver name = executable name
-RELEASE_URL = ("https://github.com/oligiochi/katharanp-netavark/releases/download/" "{version}/katharanp-netavark-{version}-linux-{arch}.tar.gz")
-PLUGIN_VERSION = "v0.1.4"                       # plugin release this Kathará version expects
+PLUGIN_NAME = "katharanp_vde"                  # = driver name = executable name                  
 SUPPORTED_ARCHITECTURES = {"amd64", "arm64"}    # architectures with a published plugin bundle
-
+PLUGIN_VERSION = "v0.1.5" # plugin release this Kathará version expects
+RELEASE_URL = ("https://github.com/KatharaFramework/NetworkPlugin-Netavark/releases/download/" "{version}/katharanp-netavark-{version}-linux-{arch}.tar.gz")
 class PodmanPlugin(object):
     """Class responsible for interacting with Podman Plugins."""
     __slots__ = ['install_dir']
