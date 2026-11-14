@@ -287,3 +287,22 @@ class LibpodCompat(object):
         if isinstance(state, dict):
             return state.get("Status", "unknown")
         return state or "unknown"
+    
+    def remove_container(self, container_id: str, timeout: int = 0) -> None:
+        """Force-remove a container, killing it after `timeout` seconds.
+
+        podman-py's `Container.remove()` does not forward `timeout`, so a forced removal always waits
+        the default 10 seconds for the stop signal: Kathara devices run bash as PID 1, which ignores it.
+        With `timeout=0` the container is killed at once, like `docker rm -f` does.
+
+        Args:
+            container_id (str): The ID of the container to remove.
+            timeout (int): Seconds to wait for the container to stop before killing it.
+
+        Raises:
+            NotFound: If the container does not exist.
+            APIError: If the Podman APIs return an error.
+        """
+        resp = self._api.delete(f"/containers/{container_id}",
+                                params={"force": True, "v": True, "volumes": True, "timeout": timeout})
+        resp.raise_for_status()

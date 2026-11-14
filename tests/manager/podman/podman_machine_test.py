@@ -463,14 +463,16 @@ def test_translate_start_error_other_errors_unchanged(default_device):
     assert PodmanMachine._translate_start_error(default_device, error) is error
 
 
-def test_start_failure_removes_device_and_raises_translated_error(podman_machine, default_device):
+@mock.patch("src.Kathara.manager.podman.libpod_compat.LibpodCompat.remove_container")
+def test_start_failure_removes_device_and_raises_translated_error(mock_remove_container, podman_machine,
+                                                                  default_device):
     default_device.add_meta("ulimit", "nofile=1024:524289")
     default_device.api_object.start.side_effect = APIError("500 Server Error", explanation=SETRLIMIT_EXPLANATION)
 
     with pytest.raises(MachineOptionError) as excinfo:
         podman_machine.start(default_device)
 
-    default_device.api_object.remove.assert_called_once_with(force=True)
+    mock_remove_container.assert_called_once_with(default_device.api_object.id)
     assert isinstance(excinfo.value.__cause__, APIError)
 
 
@@ -484,20 +486,21 @@ def test_start_failure_remove_error_keeps_original_error(podman_machine, default
     assert excinfo.value.explanation == "some other libpod failure"
     
 def test_remove_container_tolerates_the_pasta_apparmor_denial():
-    container = mock.Mock()
-    container.remove.side_effect = [
+    machine = mock.Mock()
+    machine.libpodCompat.remove_container.side_effect = [
         APIError("removing container network: rootless netns: kill network process: permission denied"),
         None,
     ]
+    container = mock.Mock(id="abc")
 
-    PodmanMachine._remove_container(container)
+    PodmanMachine._remove_container(machine, container)
 
-    assert container.remove.call_count == 2
+    assert machine.libpodCompat.remove_container.call_count == 2
 
 
 def test_remove_container_raises_other_api_errors():
-    container = mock.Mock()
-    container.remove.side_effect = APIError("something else")
+    machine = mock.Mock()
+    machine.libpodCompat.remove_container.side_effect = APIError("something else")
 
     with pytest.raises(APIError, match="something else"):
-        PodmanMachine._remove_container(container)
+        PodmanMachine._remove_container(machine, mock.Mock(id="abc"))

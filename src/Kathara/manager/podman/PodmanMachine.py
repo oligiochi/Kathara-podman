@@ -593,7 +593,7 @@ class PodmanMachine(object):
             # Never started, so netavark never ran the plugin for it: removing the container
             # leaves no network state behind.
             try:
-                machine.api_object.remove(force=True)
+                self._remove_container(machine.api_object)
             except APIError as remove_error:
                 logging.debug(f"Cannot remove device `{machine.name}` after a failed start: {remove_error}")
             raise self._translate_start_error(machine, e) from e
@@ -1208,13 +1208,12 @@ class PodmanMachine(object):
 
         return error
     
-    @staticmethod
-    def _remove_container(container: podman.domain.containers.Container) -> None:
-        """Force-remove a Podman container, tolerating the pasta AppArmor denial on some distributions.
+    def _remove_container(self, container: podman.domain.containers.Container, timeout: int = 0) -> None:
+        """Force-remove a Podman container at once, tolerating the pasta AppArmor denial on some distributions.
 
         Args:
             container (podman.domain.containers.Container): The Podman container to remove.
-
+            timeout (int): The number of seconds to wait for the container to stop before removing it. Default is 0.
         Returns:
             None
 
@@ -1222,13 +1221,13 @@ class PodmanMachine(object):
             APIError: If the Podman APIs return any other error.
         """
         try:
-            container.remove(v=True, force=True)
+            self.libpodCompat.remove_container(container.id)
         except APIError as e:
             if ROOTLESS_NETNS_KILL_ERROR not in str(e):
                 raise
             logging.warning("Podman could not stop its rootless network process (a known AppArmor issue "
                             "on some distributions): the device is removed anyway.")
             try:
-                container.remove(v=True, force=True)
+                self.libpodCompat.remove_container(container.id)
             except NotFound:
                 pass

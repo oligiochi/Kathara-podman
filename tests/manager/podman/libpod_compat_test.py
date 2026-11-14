@@ -279,3 +279,14 @@ def test_inspect_remote_manifest_raises_on_error():
 
     with pytest.raises(APIError):
         libpod.inspect_remote_manifest("docker.io/kathara/missing:latest")
+
+def test_remove_container_kills_at_once():
+    client = Mock()
+    compat = LibpodCompat(client)
+
+    compat.remove_container("abc")
+
+    client.api.delete.assert_called_once_with(
+        "/containers/abc", params={"force": True, "v": True, "volumes": True, "timeout": 0}
+    )
+    client.api.delete.return_value.raise_for_status.assert_called_once()
